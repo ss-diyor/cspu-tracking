@@ -226,6 +226,67 @@ async def stats(month: str):
     return await month_stats(month)
 
 
+@app.get("/api/stats/trend")
+async def stats_trend(month: str):
+    """Oy ichidagi har bir kun uchun jami davomat (grafik uchun)."""
+    start, end = month_range(month)
+    rows = await app.state.pool.fetch(
+        """
+        SELECT l.lesson_date AS d,
+               COUNT(*) FILTER (WHERE a.status = 'present')   AS present,
+               COUNT(*) FILTER (WHERE a.status = 'absent')    AS absent,
+               COUNT(*) FILTER (WHERE a.status = 'excused')   AS excused,
+               COUNT(*) FILTER (WHERE a.status = 'unexcused') AS unexcused
+        FROM lessons l
+        JOIN attendance a ON a.lesson_id = l.id
+        JOIN students s ON s.id = a.student_id AND s.active
+        WHERE l.lesson_date >= $1 AND l.lesson_date < $2
+        GROUP BY l.lesson_date
+        ORDER BY l.lesson_date
+        """,
+        start, end,
+    )
+    out = []
+    for r in rows:
+        total = r["present"] + r["absent"] + r["excused"] + r["unexcused"]
+        out.append({
+            "date": r["d"].isoformat(),
+            "present": r["present"], "absent": r["absent"],
+            "excused": r["excused"], "unexcused": r["unexcused"],
+            "total": total,
+            "percent": round(r["present"] * 100 / total) if total else 0,
+        })
+    return out
+
+
+@app.get("/api/stats/day")
+async def stats_day(lesson_date: date):
+    """Bitta kun: har bir dars bo'yicha sonlar va kelmaganlar ro'yxati."""
+    pool = app.state.pool
+    lessons = await pool.fetch(
+        "SELECT id, pair_no, subject FROM lessons WHERE lesson_date = $1 ORDER BY pair_no",
+        lesson_date,
+    )
+    ids = [l["id"] for l in lessons]
+    recs = await pool.fetch(
+        "SELECT a.lesson_id, a.status, s.full_name "
+        "FROM attendance a JOIN students s ON s.id = a.student_id AND s.active "
+        "WHERE a.lesson_id = ANY($1::int[]) ORDER BY s.sort_order, s.full_name",
+        ids,
+    )
+    out = []
+    for l in lessons:
+        mine = [r for r in recs if r["lesson_id"] == l["id"]]
+        item = {"id": l["id"], "pair_no": l["pair_no"], "subject": l["subject"],
+                "total": len(mine),
+                "absentees": [{"full_name": r["full_name"], "status": r["status"]}
+                              for r in mine if r["status"] != "present"]}
+        for k in STATUSES:
+            item[k] = sum(1 for r in mine if r["status"] == k)
+        out.append(item)
+    return out
+
+
 # ---------- Excel ----------
 @app.get("/api/export")
 async def export_xlsx(month: str):

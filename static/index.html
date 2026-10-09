@@ -52,6 +52,13 @@
   th, td { padding: 8px 6px; text-align: center; border-bottom: 1px solid var(--line); white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); }
   .pct { font-weight: 700; }
+  #chartMode button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0; font-size: .85rem; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .badge { font-size: .85rem; padding: 2px 8px; border-radius: 99px; color: #fff; }
+  .abs-row { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .abs-row span:last-child { font-weight: 500; }
   .day { margin: 0 0 14px; }
   .day h2 { margin: 0 0 6px; }
   .day.today h2::after { content: " — bugun"; color: var(--accent); font-weight: 500; }
@@ -109,12 +116,33 @@
 
   <!-- STATISTIKA -->
   <section id="tab-stats" class="hidden">
-    <div class="row">
-      <input type="month" id="month">
-      <button id="xlsx" class="primary" style="flex:0 0 auto">Excel yuklab olish</button>
+    <nav id="statMode">
+      <button data-m="month" class="on">Oylik</button>
+      <button data-m="day">Kunlik</button>
+    </nav>
+
+    <div id="statMonth">
+      <div class="row">
+        <input type="month" id="month">
+        <button id="xlsx" class="primary" style="flex:0 0 auto">Excel yuklab olish</button>
+      </div>
+      <div class="card">
+        <div class="row" id="chartMode" style="margin-bottom:6px">
+          <button data-c="line" class="on">Chiziq</button>
+          <button data-c="bar">Ustun</button>
+        </div>
+        <div id="chart"></div>
+        <div class="legend" id="legend"></div>
+        <div class="muted" id="chartInfo" style="min-height:1.4em"></div>
+      </div>
+      <div class="card tbl" style="margin-top:12px"><table id="statTbl"></table></div>
+      <p class="muted">Foiz = "Bor" soni / belgilangan darslar soni.</p>
     </div>
-    <div class="card tbl"><table id="statTbl"></table></div>
-    <p class="muted">Foiz = "Bor" soni / belgilangan darslar soni.</p>
+
+    <div id="statDay" class="hidden">
+      <div class="row"><input type="date" id="statDate"></div>
+      <div id="dayOut"></div>
+    </div>
   </section>
 
   <!-- JADVAL -->
@@ -205,7 +233,7 @@ $("#tabs").onclick = e => {
   const b = e.target.closest("button[data-tab]"); if (!b) return;
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
   ["att", "stats", "sch", "stu"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== b.dataset.tab));
-  if (b.dataset.tab === "stats") loadStats();
+  if (b.dataset.tab === "stats") refreshStats();
   if (b.dataset.tab === "sch") loadSchedule();
   if (b.dataset.tab === "stu") loadStudents();
 };
@@ -326,10 +354,91 @@ $("#saveAtt").onclick = async () => {
 // Statistika
 async function loadStats() {
   const m = $("#month").value;
-  const rows = await api("/api/stats?month=" + m);
+  if (!m) return;
+  const [rows, tr] = await Promise.all([api("/api/stats?month=" + m), api("/api/stats/trend?month=" + m)]);
+  trend = tr; drawChart();
   $("#statTbl").innerHTML = `<tr><th>Talaba</th><th>Bor</th><th>Yo'q</th><th>Sababli</th><th>Sababsiz</th><th>%</th></tr>` +
     rows.map(r => `<tr><td>${esc(r.full_name)}</td><td>${r.present}</td><td>${r.absent}</td><td>${r.excused}</td><td>${r.unexcused}</td><td class="pct">${r.percent ?? "—"}</td></tr>`).join("");
 }
+// Grafik (oylik): har bir dars kuni uchun
+let trend = [], chartMode = "line";
+const COL = { present: "var(--present)", absent: "var(--absent)", excused: "var(--excused)", unexcused: "var(--unexcused)" };
+const dm = d => d.slice(8) + "." + d.slice(5, 7);
+
+function drawChart() {
+  const box = $("#chart");
+  $("#chartInfo").textContent = trend.length ? "Nuqta yoki ustunni bosing — kun tafsiloti chiqadi." : "";
+  if (!trend.length) {
+    box.innerHTML = '<span class="muted">Bu oyda davomat belgilangan dars yo\'q.</span>';
+    $("#legend").innerHTML = ""; return;
+  }
+  const W = 600, H = 230, L = 38, R = 12, T = 12, B = 30, iw = W - L - R, ih = H - T - B, n = trend.length;
+  const y = p => T + ih - p * ih / 100;
+  const bw = iw / n;
+  const cx = i => L + bw * i + bw / 2;
+  const step = Math.ceil(n / 8);
+  const grid = [0, 25, 50, 75, 100].map(p =>
+    `<line x1="${L}" x2="${W - R}" y1="${y(p)}" y2="${y(p)}" stroke="var(--line)"/>` +
+    `<text x="${L - 6}" y="${y(p) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${p}%</text>`).join("");
+  const labels = trend.map((t, i) => i % step === 0
+    ? `<text x="${cx(i)}" y="${H - 10}" text-anchor="middle" font-size="11" fill="var(--muted)">${dm(t.date)}</text>` : "").join("");
+  let body;
+  if (chartMode === "line") {
+    const pts = trend.map((t, i) => `${cx(i)},${y(t.percent)}`).join(" ");
+    body = `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>` +
+      trend.map((t, i) => `<circle data-i="${i}" cx="${cx(i)}" cy="${y(t.percent)}" r="7" fill="var(--accent)" stroke="var(--surface)" stroke-width="2" style="cursor:pointer"/>`).join("");
+    $("#legend").innerHTML = '<span><i style="background:var(--accent)"></i>Kunlik davomat foizi ("Bor")</span>';
+  } else {
+    body = trend.map((t, i) => {
+      let acc = 0;
+      return ["present", "excused", "unexcused", "absent"].map(k => {
+        const p = t.total ? t[k] * 100 / t.total : 0;
+        const r = `<rect data-i="${i}" x="${cx(i) - bw * 0.35}" width="${bw * 0.7}" y="${y(acc + p)}" height="${y(acc) - y(acc + p)}" fill="${COL[k]}" style="cursor:pointer"/>`;
+        acc += p; return r;
+      }).join("");
+    }).join("");
+    $("#legend").innerHTML = Object.entries(LABEL).map(([k, v]) => `<span><i style="background:${COL[k]}"></i>${v}</span>`).join("");
+  }
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Oylik davomat grafigi">${grid}${body}${labels}</svg>`;
+}
+
+$("#chart").onclick = e => {
+  const el = e.target.closest("[data-i]"); if (!el) return;
+  const t = trend[+el.dataset.i];
+  $("#chartInfo").textContent = `${dm(t.date)} — Bor ${t.present}, Yo'q ${t.absent}, Sababli ${t.excused}, Sababsiz ${t.unexcused} (${t.percent}%)`;
+};
+
+$("#chartMode").onclick = e => {
+  const b = e.target.closest("button[data-c]"); if (!b) return;
+  chartMode = b.dataset.c;
+  document.querySelectorAll("#chartMode button").forEach(x => x.classList.toggle("on", x === b));
+  drawChart();
+};
+
+// Kunlik statistika
+async function loadDay() {
+  const d = $("#statDate").value; if (!d) return;
+  const lessons = await api("/api/stats/day?lesson_date=" + d);
+  $("#dayOut").innerHTML = lessons.length ? lessons.map(l => {
+    const badges = l.total ? Object.entries(LABEL).map(([k, v]) => l[k] ? `<span class="badge" style="background:${COL[k]}">${v}: ${l[k]}</span>` : "").join("") : "";
+    const abs = !l.total ? '<span class="muted">Davomat hali belgilanmagan.</span>'
+      : l.absentees.length ? l.absentees.map(a => `<div class="abs-row"><span>${esc(a.full_name)}</span><span style="color:${COL[a.status]}">${LABEL[a.status]}</span></div>`).join("")
+      : '<span class="muted">Hamma kelgan ✓</span>';
+    return `<div class="card" style="margin-bottom:12px"><div style="font-weight:500">${l.pair_no}-juftlik · ${esc(l.subject)}</div><div class="badges">${badges}</div>${abs}</div>`;
+  }).join("") : '<div class="card muted">Bu kunda dars qo\'shilmagan.</div>';
+}
+$("#statDate").onchange = loadDay;
+
+function refreshStats() { $("#statDay").classList.contains("hidden") ? loadStats() : loadDay(); }
+
+$("#statMode").onclick = e => {
+  const b = e.target.closest("button[data-m]"); if (!b) return;
+  document.querySelectorAll("#statMode button").forEach(x => x.classList.toggle("on", x === b));
+  $("#statMonth").classList.toggle("hidden", b.dataset.m !== "month");
+  $("#statDay").classList.toggle("hidden", b.dataset.m !== "day");
+  refreshStats();
+};
+
 $("#month").onchange = loadStats;
 $("#xlsx").onclick = () => location.href = "/api/export?month=" + $("#month").value;
 
@@ -449,8 +558,9 @@ $("#tab-sch").onclick = async e => {
 };
 
 // Boshlash
-const today = new Date(); const iso = today.toISOString().slice(0, 10);
-$("#date").value = iso; $("#month").value = iso.slice(0, 7);
+const today = new Date();
+const iso = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().slice(0, 10);  // mahalliy sana
+$("#date").value = iso; $("#statDate").value = iso; $("#month").value = iso.slice(0, 7);
 $("#date").onchange = () => { lessonId = null; loadLessons(); };
 (async () => {
   if (token && await checkToken(token)) setAdmin(true); else { token = ""; setAdmin(false); }

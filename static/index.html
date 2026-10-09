@@ -100,6 +100,10 @@
       <div class="muted" id="attTitle"></div>
       <div id="attList"></div>
       <button class="primary admin-only hidden" id="saveAtt" style="width:100%;margin-top:10px">Davomatni saqlash</button>
+      <div class="row admin-only hidden" style="margin:8px 0 0">
+        <button id="editLesson">Fanni o'zgartirish</button>
+        <button id="delLesson">Darsni o'chirish</button>
+      </div>
     </div>
   </section>
 
@@ -208,6 +212,29 @@ $("#tabs").onclick = e => {
 
 // Darslar
 let scheduleLoaded = false;
+let lessonsToday = [];
+
+$("#editLesson").onclick = async () => {
+  const l = lessonsToday.find(x => x.id === lessonId); if (!l) return;
+  const subject = prompt("Fan nomi:", l.subject);
+  if (!subject || !subject.trim()) return;
+  try {
+    await api(`/api/lessons/${l.id}`, { method: "PUT", body: JSON.stringify({ subject: subject.trim(), pair_no: l.pair_no }) });
+    toast("O'zgartirildi");
+    $("#attTitle").textContent = `${l.pair_no}-juftlik · ${subject.trim()}`;
+    await loadLessons();
+  } catch (e) { toast(e.message); }
+};
+
+$("#delLesson").onclick = async () => {
+  if (!lessonId || !confirm("Dars va uning davomati butunlay o'chiriladi. Davom etasizmi?")) return;
+  try {
+    await api(`/api/lessons/${lessonId}`, { method: "DELETE" });
+    lessonId = null; $("#attCard").classList.add("hidden");
+    toast("Dars o'chirildi");
+    await loadLessons();
+  } catch (e) { toast(e.message); }
+};
 
 async function ensureSchedule() {
   if (!scheduleLoaded) { schedule = await api("/api/schedule"); scheduleLoaded = true; }
@@ -240,6 +267,7 @@ $("#fromSchedule").onclick = async e => {
 async function loadLessons() {
   if (!$("#date").value) return;
   const list = await api("/api/lessons?lesson_date=" + $("#date").value);
+  lessonsToday = list;
   renderSuggestions(list);
   const box = $("#lessons");
   box.innerHTML = list.length ? "" : '<span class="muted">Bu kunga dars qo\'shilmagan.</span>';
@@ -308,8 +336,28 @@ $("#xlsx").onclick = () => location.href = "/api/export?month=" + $("#month").va
 // Talabalar
 async function loadStudents() {
   const rows = await api("/api/students");
-  $("#stuList").innerHTML = rows.map((r, i) => `<div class="stu">${i + 1}. ${esc(r.full_name)}</div>`).join("") || '<span class="muted">Ro\'yxat bo\'sh.</span>';
+  $("#stuList").innerHTML = rows.map((r, i) => `<div class="stu" style="display:flex;gap:6px;align-items:center">
+    <span style="flex:1">${i + 1}. ${esc(r.full_name)}</span>
+    <button data-ren="${r.id}" data-name="${esc(r.full_name)}" aria-label="Ismni tahrirlash">✎</button>
+    <button data-rem="${r.id}" data-name="${esc(r.full_name)}" aria-label="Ro'yxatdan chiqarish">✕</button>
+  </div>`).join("") || '<span class="muted">Ro\'yxat bo\'sh.</span>';
 }
+$("#stuList").onclick = async e => {
+  const ren = e.target.closest("[data-ren]"), rem = e.target.closest("[data-rem]");
+  try {
+    if (ren) {
+      const name = prompt("Ism-familya:", ren.dataset.name);
+      if (!name || !name.trim()) return;
+      await api(`/api/students/${ren.dataset.ren}`, { method: "PUT", body: JSON.stringify({ full_name: name.trim() }) });
+      toast("O'zgartirildi"); loadStudents();
+    }
+    if (rem && confirm(`${rem.dataset.name} ro'yxatdan chiqariladi (davomat tarixi saqlanadi). Davom etasizmi?`)) {
+      await api(`/api/students/${rem.dataset.rem}`, { method: "DELETE" });
+      toast("Ro'yxatdan chiqarildi"); loadStudents();
+    }
+  } catch (err) { toast(err.message); }
+};
+
 $("#addStu").onclick = async () => {
   const names = $("#names").value.split("\n");
   try { const r = await api("/api/students", { method: "POST", body: JSON.stringify({ names }) }); $("#names").value = ""; toast(`${r.added} ta qo'shildi`); loadStudents(); }

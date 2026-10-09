@@ -86,13 +86,15 @@
       <input type="date" id="date">
     </div>
     <div class="row admin-only hidden">
-      <input id="subject" placeholder="Fan nomi">
+      <input id="subject" placeholder="Fan nomi" list="subjList">
+      <datalist id="subjList"></datalist>
       <select id="pair">
         <option value="1">1-juftlik</option><option value="2">2-juftlik</option>
         <option value="3">3-juftlik</option><option value="4">4-juftlik</option>
       </select>
       <button class="primary" id="addLesson" style="flex:0 0 auto">Dars qo'shish</button>
     </div>
+    <div id="fromSchedule"></div>
     <div class="lessons" id="lessons"></div>
     <div class="card hidden" id="attCard">
       <div class="muted" id="attTitle"></div>
@@ -187,10 +189,10 @@ async function checkToken(t) {
 }
 
 $("#loginBtn").onclick = async () => {
-  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); return; }
+  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); loadLessons(); return; }
   const t = prompt("Starosta paroli:");
   if (!t) return;
-  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); }
+  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); loadLessons(); }
   else toast("Parol noto'g'ri");
 };
 
@@ -205,8 +207,40 @@ $("#tabs").onclick = e => {
 };
 
 // Darslar
+let scheduleLoaded = false;
+
+async function ensureSchedule() {
+  if (!scheduleLoaded) { schedule = await api("/api/schedule"); scheduleLoaded = true; }
+}
+
+// Tanlangan sana hafta kuniga mos darslarni jadvaldan taklif qiladi
+async function renderSuggestions(existing) {
+  await ensureSchedule();
+  const dow = new Date($("#date").value + "T00:00:00").getDay();
+  const wd = dow === 0 ? 7 : dow;
+  const used = new Set(existing.map(l => l.pair_no));
+  const todays = schedule.filter(s => s.weekday === wd && !used.has(s.pair_no));
+  $("#fromSchedule").innerHTML = isAdmin && todays.length
+    ? '<div class="muted">Jadvaldan tanlang:</div><div class="lessons">' +
+      todays.map(s => `<button data-sid="${s.id}">${s.pair_no}-juftlik · ${esc(s.subject)}</button>`).join("") + "</div>"
+    : "";
+  $("#subjList").innerHTML = [...new Set(schedule.map(s => s.subject))].map(s => `<option value="${esc(s)}">`).join("");
+}
+
+$("#fromSchedule").onclick = async e => {
+  const b = e.target.closest("button[data-sid]"); if (!b) return;
+  const s = schedule.find(x => x.id === +b.dataset.sid); if (!s) return;
+  try {
+    const l = await api("/api/lessons", { method: "POST", body: JSON.stringify({ lesson_date: $("#date").value, subject: s.subject, pair_no: s.pair_no }) });
+    await loadLessons();
+    openLesson(l.id, `${l.pair_no}-juftlik · ${l.subject}`);
+  } catch (err) { toast(err.message); }
+};
+
 async function loadLessons() {
+  if (!$("#date").value) return;
   const list = await api("/api/lessons?lesson_date=" + $("#date").value);
+  renderSuggestions(list);
   const box = $("#lessons");
   box.innerHTML = list.length ? "" : '<span class="muted">Bu kunga dars qo\'shilmagan.</span>';
   list.forEach(l => {
@@ -320,6 +354,7 @@ function renderSchedule() {
 
 async function loadSchedule() {
   schedule = await api("/api/schedule");
+  scheduleLoaded = true;
   renderSchedule();
 }
 

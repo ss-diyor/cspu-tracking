@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XTA 26/5 — Davomat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #eef2f5; --surface: #ffffff; --ink: #14212b; --muted: #5d6b76; --line: #d5dde3;
+    --accent: #0f6b8f;
+    --present: #1f8a4c; --absent: #c9342b; --excused: #b7791f; --unexcused: #7a3e8e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f171d; --surface: #17222a; --ink: #e8eef2; --muted: #93a2ad; --line: #2a3943; --accent: #4cb4d8; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 Onest, system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  header, main { max-width: 640px; margin: 0 auto; padding: 14px 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; }
+  h1 { font-size: 1.15rem; margin: 0; }
+  h2 { font-size: 1rem; margin: 18px 0 8px; }
+  nav { display: flex; gap: 6px; margin-bottom: 14px; }
+  nav button { flex: 1; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+  nav button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input, select, textarea { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .row > * { flex: 1; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .hidden { display: none !important; }
+  .lessons { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .lessons button.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .stu { padding: 10px 0; border-top: 1px solid var(--line); }
+  .stu:first-child { border-top: 0; }
+  .stu .name { margin-bottom: 6px; font-weight: 500; }
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .seg button { padding: 7px 2px; font-size: .85rem; }
+  .seg button[data-s=present].on { background: var(--present); border-color: var(--present); color: #fff; }
+  .seg button[data-s=absent].on { background: var(--absent); border-color: var(--absent); color: #fff; }
+  .seg button[data-s=excused].on { background: var(--excused); border-color: var(--excused); color: #fff; }
+  .seg button[data-s=unexcused].on { background: var(--unexcused); border-color: var(--unexcused); color: #fff; }
+  .readonly .seg { pointer-events: none; }
+  .tbl { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { padding: 8px 6px; text-align: center; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); }
+  .pct { font-weight: 700; }
+  .day { margin: 0 0 14px; }
+  .day h2 { margin: 0 0 6px; }
+  .day.today h2::after { content: " — bugun"; color: var(--accent); font-weight: 500; }
+  .item { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .item:first-child { border-top: 0; }
+  .item .time { flex: 0 0 76px; font-size: .9rem; color: var(--muted); }
+  .item .time b { display: block; color: var(--ink); }
+  .item .info { flex: 1; min-width: 0; }
+  .item .subj { font-weight: 500; }
+  .item .acts { display: flex; gap: 4px; align-items: flex-start; }
+  .item .acts button { padding: 5px 8px; font-size: .85rem; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>XTA 26/5 — Davomat</h1>
+  <button id="loginBtn">Starosta kirishi</button>
+</header>
+
+<main>
+  <nav id="tabs">
+    <button data-tab="att" class="on">Davomat</button>
+    <button data-tab="stats">Statistika</button>
+    <button data-tab="sch">Jadval</button>
+    <button data-tab="stu" class="admin-only hidden">Talabalar</button>
+  </nav>
+
+  <!-- DAVOMAT -->
+  <section id="tab-att">
+    <div class="row">
+      <input type="date" id="date">
+    </div>
+    <div class="row admin-only hidden">
+      <input id="subject" placeholder="Fan nomi">
+      <select id="pair">
+        <option value="1">1-juftlik</option><option value="2">2-juftlik</option>
+        <option value="3">3-juftlik</option><option value="4">4-juftlik</option>
+      </select>
+      <button class="primary" id="addLesson" style="flex:0 0 auto">Dars qo'shish</button>
+    </div>
+    <div class="lessons" id="lessons"></div>
+    <div class="card hidden" id="attCard">
+      <div class="muted" id="attTitle"></div>
+      <div id="attList"></div>
+      <button class="primary admin-only hidden" id="saveAtt" style="width:100%;margin-top:10px">Davomatni saqlash</button>
+    </div>
+  </section>
+
+  <!-- STATISTIKA -->
+  <section id="tab-stats" class="hidden">
+    <div class="row">
+      <input type="month" id="month">
+      <button id="xlsx" class="primary" style="flex:0 0 auto">Excel yuklab olish</button>
+    </div>
+    <div class="card tbl"><table id="statTbl"></table></div>
+    <p class="muted">Foiz = "Bor" soni / belgilangan darslar soni.</p>
+  </section>
+
+  <!-- JADVAL -->
+  <section id="tab-sch" class="hidden">
+    <div class="card admin-only hidden" id="schForm">
+      <div class="muted" id="schFormTitle">Yangi dars qo'shish</div>
+      <div class="row" style="margin-top:8px">
+        <select id="sDay">
+          <option value="1">Dushanba</option><option value="2">Seshanba</option>
+          <option value="3">Chorshanba</option><option value="4">Payshanba</option>
+          <option value="5">Juma</option><option value="6">Shanba</option>
+        </select>
+        <select id="sPair">
+          <option value="1">1-juftlik</option><option value="2">2-juftlik</option>
+          <option value="3">3-juftlik</option><option value="4">4-juftlik</option>
+          <option value="5">5-juftlik</option>
+        </select>
+      </div>
+      <div class="row">
+        <input type="time" id="sStart" aria-label="Boshlanish vaqti">
+        <input type="time" id="sEnd" aria-label="Tugash vaqti">
+      </div>
+      <div class="row"><input id="sSubject" placeholder="Fan nomi"></div>
+      <div class="row">
+        <input id="sRoom" placeholder="Xona (masalan, 305)">
+        <input id="sTeacher" placeholder="Ustoz F.I.Sh.">
+      </div>
+      <div class="row">
+        <button class="primary" id="sSave">Qo'shish</button>
+        <button id="sCancel" class="hidden">Bekor qilish</button>
+      </div>
+    </div>
+    <div id="schToday"></div>
+    <div id="schWeek"></div>
+  </section>
+
+  <!-- TALABALAR -->
+  <section id="tab-stu" class="hidden">
+    <div class="card">
+      <div class="muted">Har bir qatorga bitta F.I.Sh.</div>
+      <textarea id="names" rows="8" placeholder="Aliyev Vali&#10;Karimova Zilola"></textarea>
+      <button class="primary" id="addStu" style="width:100%;margin-top:8px">Talabalarni qo'shish</button>
+    </div>
+    <h2>Ro'yxat</h2>
+    <div class="card" id="stuList"></div>
+  </section>
+</main>
+
+<script>
+const LABEL = { present: "Bor", absent: "Yo'q", excused: "Sababli", unexcused: "Sababsiz" };
+const $ = s => document.querySelector(s);
+let token = localStorage.getItem("adminToken") || "";
+let isAdmin = false;
+let lessonId = null;
+let marks = {};          // student_id -> status
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const toast = t => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 2200); };
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Admin-Token": token, ...(opts.headers || {}) } });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || "Xatolik yuz berdi"); }
+  return res.json();
+}
+
+function setAdmin(on) {
+  isAdmin = on;
+  document.querySelectorAll(".admin-only").forEach(e => e.classList.toggle("hidden", !on));
+  $("#loginBtn").textContent = on ? "Chiqish" : "Starosta kirishi";
+}
+
+// admin tokenni tekshirish: bo'sh talaba ro'yxatini yuborib ko'ramiz
+async function checkToken(t) {
+  const r = await fetch("/api/students", { method: "POST", headers: { "Content-Type": "application/json", "X-Admin-Token": t }, body: JSON.stringify({ names: [] }) });
+  return r.ok;
+}
+
+$("#loginBtn").onclick = async () => {
+  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); return; }
+  const t = prompt("Starosta paroli:");
+  if (!t) return;
+  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); }
+  else toast("Parol noto'g'ri");
+};
+
+// Tablar
+$("#tabs").onclick = e => {
+  const b = e.target.closest("button[data-tab]"); if (!b) return;
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
+  ["att", "stats", "sch", "stu"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== b.dataset.tab));
+  if (b.dataset.tab === "stats") loadStats();
+  if (b.dataset.tab === "sch") loadSchedule();
+  if (b.dataset.tab === "stu") loadStudents();
+};
+
+// Darslar
+async function loadLessons() {
+  const list = await api("/api/lessons?lesson_date=" + $("#date").value);
+  const box = $("#lessons");
+  box.innerHTML = list.length ? "" : '<span class="muted">Bu kunga dars qo\'shilmagan.</span>';
+  list.forEach(l => {
+    const b = document.createElement("button");
+    b.textContent = `${l.pair_no}-juftlik · ${l.subject}`;
+    b.className = l.id === lessonId ? "on" : "";
+    b.onclick = () => openLesson(l.id, b.textContent);
+    box.append(b);
+  });
+  if (!list.some(l => l.id === lessonId)) { lessonId = null; $("#attCard").classList.add("hidden"); }
+}
+
+$("#addLesson").onclick = async () => {
+  const subject = $("#subject").value.trim();
+  if (!subject) return toast("Fan nomini yozing");
+  try {
+    const l = await api("/api/lessons", { method: "POST", body: JSON.stringify({ lesson_date: $("#date").value, subject, pair_no: +$("#pair").value }) });
+    $("#subject").value = "";
+    await loadLessons();
+    openLesson(l.id, `${l.pair_no}-juftlik · ${l.subject}`);
+  } catch (e) { toast(e.message); }
+};
+
+async function openLesson(id, title) {
+  if (!id) return;
+  lessonId = id;
+  if (title) $("#attTitle").textContent = title;
+  const rows = await api(`/api/lessons/${id}/attendance`);
+  marks = {};
+  rows.forEach(r => marks[r.student_id] = r.status || "present");   // belgilanmagan = Bor
+  const list = $("#attList");
+  list.className = isAdmin ? "" : "readonly";
+  list.innerHTML = rows.map(r => `
+    <div class="stu" data-id="${r.student_id}">
+      <div class="name">${esc(r.full_name)}</div>
+      <div class="seg">${Object.entries(LABEL).map(([k, v]) => `<button data-s="${k}" class="${marks[r.student_id] === k ? "on" : ""}">${v}</button>`).join("")}</div>
+    </div>`).join("") || '<span class="muted">Avval talabalarni qo\'shing.</span>';
+  $("#attCard").classList.remove("hidden");
+  document.querySelectorAll("#lessons button").forEach(b => b.classList.toggle("on", b.textContent === $("#attTitle").textContent));
+}
+
+$("#attList").onclick = e => {
+  const b = e.target.closest("button[data-s]"); if (!b || !isAdmin) return;
+  const row = b.closest(".stu");
+  marks[row.dataset.id] = b.dataset.s;
+  row.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+};
+
+$("#saveAtt").onclick = async () => {
+  const records = Object.entries(marks).map(([student_id, status]) => ({ student_id: +student_id, status }));
+  try { await api(`/api/lessons/${lessonId}/attendance`, { method: "PUT", body: JSON.stringify({ records }) }); toast("Saqlandi"); }
+  catch (e) { toast(e.message); }
+};
+
+// Statistika
+async function loadStats() {
+  const m = $("#month").value;
+  const rows = await api("/api/stats?month=" + m);
+  $("#statTbl").innerHTML = `<tr><th>Talaba</th><th>Bor</th><th>Yo'q</th><th>Sababli</th><th>Sababsiz</th><th>%</th></tr>` +
+    rows.map(r => `<tr><td>${esc(r.full_name)}</td><td>${r.present}</td><td>${r.absent}</td><td>${r.excused}</td><td>${r.unexcused}</td><td class="pct">${r.percent ?? "—"}</td></tr>`).join("");
+}
+$("#month").onchange = loadStats;
+$("#xlsx").onclick = () => location.href = "/api/export?month=" + $("#month").value;
+
+// Talabalar
+async function loadStudents() {
+  const rows = await api("/api/students");
+  $("#stuList").innerHTML = rows.map((r, i) => `<div class="stu">${i + 1}. ${esc(r.full_name)}</div>`).join("") || '<span class="muted">Ro\'yxat bo\'sh.</span>';
+}
+$("#addStu").onclick = async () => {
+  const names = $("#names").value.split("\n");
+  try { const r = await api("/api/students", { method: "POST", body: JSON.stringify({ names }) }); $("#names").value = ""; toast(`${r.added} ta qo'shildi`); loadStudents(); }
+  catch (e) { toast(e.message); }
+};
+
+// Dars jadvali
+const DAYS = ["", "Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"];
+let schedule = [];
+let editId = null;
+
+function schItem(l) {
+  const time = l.start_time ? `<b>${l.start_time}</b>${l.end_time || ""}` : "";
+  const meta = [l.room ? `Xona ${esc(l.room)}` : "", esc(l.teacher)].filter(Boolean).join(" · ");
+  return `<div class="item">
+    <div class="time">${time || l.pair_no + "-juftlik"}</div>
+    <div class="info">
+      <div class="subj">${l.start_time ? l.pair_no + "-juftlik · " : ""}${esc(l.subject)}</div>
+      ${meta ? `<div class="muted">${meta}</div>` : ""}
+    </div>
+    <div class="acts admin-only${isAdmin ? "" : " hidden"}">
+      <button data-edit="${l.id}" aria-label="Tahrirlash">✎</button>
+      <button data-del="${l.id}" aria-label="O'chirish">✕</button>
+    </div>
+  </div>`;
+}
+
+function renderSchedule() {
+  const d = new Date().getDay(); const todayNo = d === 0 ? 7 : d;
+  const byDay = n => schedule.filter(l => l.weekday === n);
+
+  const t = byDay(todayNo);
+  $("#schToday").innerHTML = `<div class="card day today"><h2>${DAYS[todayNo]}</h2>` +
+    (t.length ? t.map(schItem).join("") : '<span class="muted">Bugun dars yo\'q.</span>') + `</div>`;
+
+  $("#schWeek").innerHTML = [1, 2, 3, 4, 5, 6].filter(n => n !== todayNo).map(n => {
+    const list = byDay(n);
+    return `<div class="card day"><h2>${DAYS[n]}</h2>` +
+      (list.length ? list.map(schItem).join("") : '<span class="muted">Dars yo\'q.</span>') + `</div>`;
+  }).join("");
+}
+
+async function loadSchedule() {
+  schedule = await api("/api/schedule");
+  renderSchedule();
+}
+
+function resetSchForm() {
+  editId = null;
+  ["sStart", "sEnd", "sSubject", "sRoom", "sTeacher"].forEach(id => $("#" + id).value = "");
+  $("#sSave").textContent = "Qo'shish";
+  $("#schFormTitle").textContent = "Yangi dars qo'shish";
+  $("#sCancel").classList.add("hidden");
+}
+
+$("#sSave").onclick = async () => {
+  const body = {
+    weekday: +$("#sDay").value, pair_no: +$("#sPair").value,
+    start_time: $("#sStart").value || null, end_time: $("#sEnd").value || null,
+    subject: $("#sSubject").value.trim(), room: $("#sRoom").value.trim(), teacher: $("#sTeacher").value.trim()
+  };
+  if (!body.subject) return toast("Fan nomini yozing");
+  try {
+    await api(editId ? `/api/schedule/${editId}` : "/api/schedule", { method: editId ? "PUT" : "POST", body: JSON.stringify(body) });
+    toast(editId ? "O'zgarishlar saqlandi" : "Dars qo'shildi");
+    resetSchForm(); loadSchedule();
+  } catch (e) { toast(e.message); }
+};
+$("#sCancel").onclick = resetSchForm;
+
+$("#tab-sch").onclick = async e => {
+  const ed = e.target.closest("[data-edit]"), del = e.target.closest("[data-del]");
+  if (ed) {
+    const l = schedule.find(x => x.id === +ed.dataset.edit); if (!l) return;
+    editId = l.id;
+    $("#sDay").value = l.weekday; $("#sPair").value = l.pair_no;
+    $("#sStart").value = l.start_time || ""; $("#sEnd").value = l.end_time || "";
+    $("#sSubject").value = l.subject; $("#sRoom").value = l.room; $("#sTeacher").value = l.teacher;
+    $("#sSave").textContent = "O'zgarishlarni saqlash";
+    $("#schFormTitle").textContent = "Darsni tahrirlash";
+    $("#sCancel").classList.remove("hidden");
+    $("#schForm").scrollIntoView({ behavior: "smooth" });
+  }
+  if (del && confirm("Bu darsni jadvaldan o'chirasizmi?")) {
+    try { await api(`/api/schedule/${del.dataset.del}`, { method: "DELETE" }); toast("O'chirildi"); loadSchedule(); }
+    catch (err) { toast(err.message); }
+  }
+};
+
+// Boshlash
+const today = new Date(); const iso = today.toISOString().slice(0, 10);
+$("#date").value = iso; $("#month").value = iso.slice(0, 7);
+$("#date").onchange = () => { lessonId = null; loadLessons(); };
+(async () => {
+  if (token && await checkToken(token)) setAdmin(true); else { token = ""; setAdmin(false); }
+  loadLessons();
+})();
+</script>
+</body>
+</html>

@@ -88,6 +88,30 @@ async def add_students(body: StudentsIn):
     return {"added": len(names)}
 
 
+class NameIn(BaseModel):
+    full_name: str
+
+
+@app.put("/api/students/{student_id}", dependencies=[Depends(admin)])
+async def rename_student(student_id: int, body: NameIn):
+    name = body.full_name.strip()
+    if not name:
+        raise HTTPException(400, "Ism bo'sh bo'lmasligi kerak")
+    res = await app.state.pool.execute(
+        "UPDATE students SET full_name = $1 WHERE id = $2", name, student_id
+    )
+    if res == "UPDATE 0":
+        raise HTTPException(404, "Talaba topilmadi")
+    return {"ok": True}
+
+
+@app.delete("/api/students/{student_id}", dependencies=[Depends(admin)])
+async def remove_student(student_id: int):
+    # Davomat tarixi saqlanib qolishi uchun o'chirmaymiz, faqat ro'yxatdan yashiramiz
+    await app.state.pool.execute("UPDATE students SET active = FALSE WHERE id = $1", student_id)
+    return {"ok": True}
+
+
 # ---------- Darslar ----------
 @app.get("/api/lessons")
 async def list_lessons(lesson_date: date):
@@ -108,6 +132,34 @@ async def create_lesson(body: LessonIn):
         body.lesson_date, body.pair_no, body.subject.strip(),
     )
     return dict(row)
+
+
+class LessonEdit(BaseModel):
+    subject: str
+    pair_no: int
+
+
+@app.put("/api/lessons/{lesson_id}", dependencies=[Depends(admin)])
+async def edit_lesson(lesson_id: int, body: LessonEdit):
+    if not body.subject.strip():
+        raise HTTPException(400, "Fan nomini yozing")
+    try:
+        res = await app.state.pool.execute(
+            "UPDATE lessons SET subject = $1, pair_no = $2 WHERE id = $3",
+            body.subject.strip(), body.pair_no, lesson_id,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(409, "Bu juftlikda boshqa dars bor")
+    if res == "UPDATE 0":
+        raise HTTPException(404, "Dars topilmadi")
+    return {"ok": True}
+
+
+@app.delete("/api/lessons/{lesson_id}", dependencies=[Depends(admin)])
+async def delete_lesson(lesson_id: int):
+    # attendance yozuvlari ON DELETE CASCADE bilan birga o'chadi
+    await app.state.pool.execute("DELETE FROM lessons WHERE id = $1", lesson_id)
+    return {"ok": True}
 
 
 # ---------- Davomat ----------

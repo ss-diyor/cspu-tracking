@@ -7,6 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f6b8f">
 <style>
   :root {
     --bg: #eef2f5; --surface: #ffffff; --ink: #14212b; --muted: #5d6b76; --line: #d5dde3;
@@ -103,6 +107,31 @@
   .tile b { display: block; font-size: 1.2rem; }
   .warn { margin-top: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--unexcused); color: var(--unexcused); font-size: .92rem; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; }
+  .today-widget { margin-bottom: 14px; }
+  .today-widget h2 { margin: 0 0 6px; }
+  .today-list { display: grid; gap: 6px; }
+  .today-item { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding: 7px 0; }
+  .today-item:first-child { border-top: 0; }
+  .today-item .time { flex: 0 0 70px; color: var(--muted); font-size: .9rem; }
+  .today-item .subject { flex: 1; min-width: 0; font-weight: 500; }
+  .today-item .room { color: var(--muted); font-size: .85rem; }
+  .schedule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .schedule-day { min-width: 0; }
+  .schedule-day h2 { margin: 0 0 4px; }
+  .schedule-slot { display: grid; grid-template-columns: 42px 1fr; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .schedule-slot .pair { color: var(--muted); font-size: .85rem; }
+  .schedule-slot .subject { font-weight: 500; word-break: break-word; }
+  .schedule-slot .meta { color: var(--muted); font-size: .8rem; }
+  .student-history { margin-top: 12px; }
+  #studentHistory { min-height: 170px; }
+  #studentHistory svg { display: block; width: 100%; height: auto; }
+  @media (max-width: 640px) {
+    body { padding-bottom: 70px; }
+    #tabs { position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; max-width: none; margin: 0; padding: 6px max(8px, env(safe-area-inset-left)) calc(6px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -3px 12px rgba(0,0,0,.08); }
+    #tabs button { min-width: 72px; font-size: .72rem; padding: 8px 5px; }
+    .schedule-grid { grid-template-columns: 1fr; }
+    .today-item .room { display: none; }
+  }
   .chart-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .chart-head #chartMode { flex: 1; margin-bottom: 0 !important; }
   #chartFullscreen { flex: 0 0 auto; white-space: nowrap; }
@@ -125,6 +154,7 @@
 </header>
 
 <main>
+  <div class="card today-widget" id="todayWidget"></div>
   <nav id="tabs">
     <button data-tab="att" class="admin-only hidden">Davomat</button>
     <button data-tab="stats" class="admin-only hidden">Statistika</button>
@@ -152,6 +182,7 @@
     <div class="lessons" id="lessons"></div>
     <div class="card hidden" id="attCard">
       <div class="muted" id="attTitle"></div>
+      <button class="sm primary admin-only hidden" id="markAllPresent" style="width:100%;margin:8px 0">Barchasini Bor deb belgilash</button>
       <div id="attList"></div>
       <button class="primary admin-only hidden" id="saveAtt" style="width:100%;margin-top:10px">Davomatni saqlash</button>
       <div class="row admin-only hidden" style="margin:8px 0 0">
@@ -165,6 +196,7 @@
   <section id="tab-stats" class="hidden">
     <nav id="statMode">
       <button data-m="month" class="on">Oylik</button>
+      <button data-m="week">Haftalik</button>
       <button data-m="day">Kunlik</button>
     </nav>
 
@@ -196,12 +228,30 @@
       <p class="muted">Foiz = (Bor + Kechikdi) / belgilangan darslar soni.</p>
     </div>
 
+    <div id="statWeek" class="hidden">
+      <div class="row">
+        <input type="date" id="statWeekDate" aria-label="Hafta sanasi">
+      </div>
+      <div class="card">
+        <div class="muted" id="weekInfo" style="min-height:1.4em"></div>
+        <div id="weekChart"></div>
+        <div class="legend" id="weekLegend"></div>
+      </div>
+    </div>
+
     <div id="statDay" class="hidden">
       <div class="row">
         <input type="date" id="statDate">
         <button id="xlsxWeek" class="primary" style="flex:0 0 auto">Haftalik Excel</button>
       </div>
       <div id="dayOut"></div>
+    </div>
+    <div class="card student-history">
+      <div class="row" style="align-items:center">
+        <div style="font-weight:500;flex:1">Talabaning davomat tarixi</div>
+        <select id="studentHistorySelect" aria-label="Talabani tanlang" style="flex:1"><option value="">Talabani tanlang</option></select>
+      </div>
+      <div id="studentHistory"><span class="muted">Talabani tanlasangiz, uning davomat grafigi chiqadi.</span></div>
     </div>
   </section>
 
@@ -413,7 +463,15 @@ $("#tabs").onclick = e => {
   const b = e.target.closest("button[data-tab]");
   if (b) showTab(b.dataset.tab);
 };
-
+async function loadTodayWidget() {
+  try {
+    const items = await api("/api/schedule");
+    const d = new Date().getDay(), wd = d === 0 ? 7 : d;
+    const todayItems = items.filter(x => x.weekday === wd);
+    $("#todayWidget").innerHTML = `<h2>Bugungi darslar · ${DAYS[wd] || ""}</h2>` +
+      (todayItems.length ? `<div class="today-list">${todayItems.map(x => `<div class="today-item"><div class="time">${x.start_time || x.pair_no + "-juftlik"}${x.end_time ? `<br>${x.end_time}` : ""}</div><div class="subject">${esc(x.subject)}<div class="muted">${x.teacher ? esc(x.teacher) : ""}</div></div><div class="room">${x.room ? "Xona " + esc(x.room) : ""}</div></div>`).join("")}</div>` : '<div class="muted">Bugun dars yo‘q.</div>');
+  } catch (e) { $("#todayWidget").innerHTML = '<div class="muted">Bugungi darslarni yuklab bo‘lmadi.</div>'; }
+}
 // Darslar
 let scheduleLoaded = false;
 let lessonsToday = [];
@@ -520,6 +578,16 @@ async function openLesson(id, title) {
   document.querySelectorAll("#lessons button").forEach(b => b.classList.toggle("on", b.textContent === $("#attTitle").textContent));
 }
 
+$("#markAllPresent").onclick = () => {
+  if (!isAdmin || !Object.keys(marks).length) return;
+  Object.keys(marks).forEach(id => { marks[id] = "present"; notes[id] = ""; });
+  document.querySelectorAll("#attList .stu").forEach(row => {
+    row.querySelectorAll("button[data-s]").forEach(b => b.classList.toggle("on", b.dataset.s === "present"));
+    const reason = row.querySelector(".reason"); if (reason) reason.classList.add("hidden");
+  });
+  toast("Barchasi Bor deb belgilandi. Saqlashni unutmang.");
+};
+
 $("#attList").onclick = e => {
   const b = e.target.closest("button[data-s]"); if (!b || !isAdmin) return;
   const row = b.closest(".stu");
@@ -550,6 +618,50 @@ async function loadStats() {
   const [rows, tr] = await Promise.all([api("/api/stats?month=" + m), api("/api/stats/trend?month=" + m)]);
   trend = tr; drawChart();
   statRows = rows; renderStats();
+  await loadHistoryStudents();
+}
+async function loadWeekStats() {
+  const d = $("#statWeekDate").value;
+  if (!d) return;
+  const rows = await api("/api/stats/week?week=" + d);
+  drawWeekChart(rows);
+}
+function drawWeekChart(rows) {
+  const W = 600, H = 230, L = 38, R = 12, T = 12, B = 34, iw = W - L - R, ih = H - T - B;
+  const y = p => T + ih - p * ih / 100, bw = iw / rows.length;
+  const cx = i => L + bw * i + bw / 2;
+  const days = ["Du", "Se", "Ch", "Pa", "Ju"];
+  const grid = [0, 25, 50, 75, 100].map(p => `<line x1="${L}" x2="${W - R}" y1="${y(p)}" y2="${y(p)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(p) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${p}%</text>`).join("");
+  const pts = rows.map((r, i) => `${cx(i)},${y(r.percent)}`).join(" ");
+  const body = `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>` + rows.map((r, i) => `<circle cx="${cx(i)}" cy="${y(r.percent)}" r="7" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/>`).join("");
+  const labels = rows.map((r, i) => `<text x="${cx(i)}" y="${H - 10}" text-anchor="middle" font-size="11" fill="var(--muted)">${days[i]} ${dm(r.date)}</text>`).join("");
+  $("#weekChart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Haftalik davomat grafigi">${grid}${body}${labels}</svg>`;
+  const total = rows.reduce((n, r) => n + r.total, 0), present = rows.reduce((n, r) => n + r.present + r.late, 0);
+  $("#weekInfo").textContent = total ? `Haftalik davomat: ${Math.round(present * 100 / total)}% · ${total} ta belgilangan davomat` : "Bu haftada davomat ma’lumoti yo‘q.";
+  $("#weekLegend").innerHTML = '<span><i style="background:var(--accent)"></i>Kunlik davomat foizi</span>';
+}
+async function loadHistoryStudents() {
+  const current = $("#studentHistorySelect").value;
+  const students = await api("/api/students");
+  $("#studentHistorySelect").innerHTML = '<option value="">Talabani tanlang</option>' + students.map(s => `<option value="${s.id}">${esc(s.full_name)}</option>`).join("");
+  if (students.some(s => String(s.id) === current)) { $("#studentHistorySelect").value = current; return; }
+  $("#studentHistory").innerHTML = '<span class="muted">Talabani tanlasangiz, uning davomat grafigi chiqadi.</span>';
+}
+async function loadStudentHistory() {
+  const id = $("#studentHistorySelect").value;
+  if (!id) { $("#studentHistory").innerHTML = '<span class="muted">Talabani tanlasangiz, uning davomat grafigi chiqadi.</span>'; return; }
+  try { drawStudentHistory(await api("/api/stats/student?student_id=" + id)); }
+  catch (e) { toast(e.message); }
+}
+function drawStudentHistory(rows) {
+  if (!rows.length) { $("#studentHistory").innerHTML = '<span class="muted">Bu talabada hali davomat tarixi yo‘q.</span>'; return; }
+  const W = 600, H = 210, L = 38, R = 12, T = 12, B = 30, iw = W - L - R, ih = H - T - B, n = rows.length;
+  const y = p => T + ih - p * ih / 100, cx = i => L + iw * (n === 1 ? .5 : i / (n - 1));
+  const values = rows.map((r, i) => ({ ...r, percent: r.status === "present" || r.status === "late" ? 100 : 0, i }));
+  const grid = [0, 50, 100].map(p => `<line x1="${L}" x2="${W - R}" y1="${y(p)}" y2="${y(p)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(p) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${p}%</text>`).join("");
+  const pts = values.map(r => `${cx(r.i)},${y(r.percent)}`).join(" ");
+  const body = `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>` + values.map(r => `<circle cx="${cx(r.i)}" cy="${y(r.percent)}" r="6" fill="${COL[r.status]}" stroke="var(--surface)" stroke-width="2"><title>${dm(r.date)} · ${r.subject}: ${LABEL[r.status]}</title></circle>`).join("");
+  $("#studentHistory").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Talabaning davomat tarixi">${grid}${body}</svg><div class="muted">Nuqtalar: yashil — Bor, ko‘k — Kechikdi, sariq/qizil — kelmagan.</div>`;
 }
 
 // Xavf ostidagilar faqat starostaga ko'rinadi (boshqa talabalar oldida sharmanda qilmaslik uchun)
@@ -660,16 +772,17 @@ $("#statDate").onchange = loadDay;
 $("#xlsxWeek").onclick = () => { if ($("#statDate").value) downloadXlsx("/api/export/week?day=" + $("#statDate").value); };
 
 function refreshStats() { $("#statDay").classList.contains("hidden") ? loadStats() : loadDay(); }
-
 $("#statMode").onclick = e => {
   const b = e.target.closest("button[data-m]"); if (!b) return;
   document.querySelectorAll("#statMode button").forEach(x => x.classList.toggle("on", x === b));
   $("#statMonth").classList.toggle("hidden", b.dataset.m !== "month");
+  $("#statWeek").classList.toggle("hidden", b.dataset.m !== "week");
   $("#statDay").classList.toggle("hidden", b.dataset.m !== "day");
-  refreshStats();
+  if (b.dataset.m === "week") loadWeekStats(); else refreshStats();
 };
-
 $("#month").onchange = loadStats;
+$("#statWeekDate").onchange = loadWeekStats;
+$("#studentHistorySelect").onchange = loadStudentHistory;
 // Starosta parol bilan yuklaydi (sababli izohlari Excelga shu holda qo'shiladi), boshqalar oddiy havola bilan
 async function downloadXlsx(url) {
   if (!isAdmin) { location.href = url; return; }
@@ -753,18 +866,21 @@ function schItem(l) {
 }
 
 function renderSchedule() {
-  const d = new Date().getDay(); const todayNo = d === 0 ? 7 : d;
-  const byDay = n => schedule.filter(l => l.weekday === n);
-
-  const t = byDay(todayNo);
-  $("#schToday").innerHTML = `<div class="card day today"><h2>${DAYS[todayNo]}</h2>` +
-    (t.length ? t.map(schItem).join("") : '<span class="muted">Bugun dars yo\'q.</span>') + `</div>`;
-
-  $("#schWeek").innerHTML = [1, 2, 3, 4, 5, 6].filter(n => n !== todayNo).map(n => {
+  const todayNo = new Date().getDay() || 7;
+  const byDay = n => schedule.filter(l => l.weekday === n).sort((a, b) => a.pair_no - b.pair_no);
+  const dayCard = n => {
     const list = byDay(n);
-    return `<div class="card day"><h2>${DAYS[n]}</h2>` +
-      (list.length ? list.map(schItem).join("") : '<span class="muted">Dars yo\'q.</span>') + `</div>`;
-  }).join("");
+    const slots = list.length ? list.map(l => `<div class="schedule-slot">
+      <div class="pair">${l.pair_no}-juftlik</div>
+      <div><div class="subject">${esc(l.subject)}</div>
+        <div class="meta">${l.start_time ? l.start_time + (l.end_time ? "–" + l.end_time : "") : "Vaqt belgilanmagan"}${l.room ? " · Xona " + esc(l.room) : ""}${l.teacher ? " · " + esc(l.teacher) : ""}</div>
+        <div class="acts admin-only${isAdmin ? "" : " hidden"}"><button class="sm" data-edit="${l.id}" aria-label="Tahrirlash">✎</button><button class="sm" data-del="${l.id}" aria-label="O‘chirish">✕</button></div>
+      </div>
+    </div>`).join("") : '<span class="muted">Dars yo‘q.</span>';
+    return `<div class="card schedule-day${n === todayNo ? " today" : ""}"><h2>${DAYS[n]}${n === todayNo ? " — bugun" : ""}</h2>${slots}</div>`;
+  };
+  $("#schToday").innerHTML = "";
+  $("#schWeek").innerHTML = `<div class="schedule-grid">${[1, 2, 3, 4, 5, 6, 7].map(dayCard).join("")}</div>`;
 }
 
 async function loadSchedule() {
@@ -1084,8 +1200,10 @@ $("#meOut").onclick = () => { studentCode = ""; localStorage.removeItem("student
 // Boshlash
 const today = new Date();
 const iso = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().slice(0, 10);  // mahalliy sana
-$("#date").value = iso; $("#statDate").value = iso; $("#month").value = iso.slice(0, 7);
+$("#date").value = iso; $("#statDate").value = iso; $("#statWeekDate").value = iso; $("#month").value = iso.slice(0, 7);
 $("#date").onchange = () => { lessonId = null; loadLessons(); };
+loadTodayWidget();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 (async () => {
   if (token && await checkToken(token)) setAdmin(true); else { token = ""; setAdmin(false); }
 })();

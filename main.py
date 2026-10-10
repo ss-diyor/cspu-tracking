@@ -285,6 +285,57 @@ async def stats_trend(month: str):
     return out
 
 
+@app.get("/api/stats/week", dependencies=[Depends(admin)])
+async def stats_week(week: date):
+    """Tanlangan sana joylashgan dushanba-juma haftasi uchun kunlik statistika."""
+    monday = week - timedelta(days=week.weekday())
+    until = monday + timedelta(days=5)
+    rows = await app.state.pool.fetch(
+        """
+        SELECT l.lesson_date AS d,
+               COUNT(*) FILTER (WHERE a.status = 'present')   AS present,
+               COUNT(*) FILTER (WHERE a.status = 'late')      AS late,
+               COUNT(*) FILTER (WHERE a.status = 'excused')   AS excused,
+               COUNT(*) FILTER (WHERE a.status = 'unexcused') AS unexcused
+        FROM lessons l
+        JOIN attendance a ON a.lesson_id = l.id
+        JOIN students s ON s.id = a.student_id AND s.active
+        WHERE l.lesson_date >= $1 AND l.lesson_date < $2
+        GROUP BY l.lesson_date
+        ORDER BY l.lesson_date
+        """,
+        monday, until,
+    )
+    by_day = {r["d"]: r for r in rows}
+    out = []
+    for i in range(5):
+        d = monday + timedelta(days=i)
+        r = by_day.get(d)
+        counts = {k: (r[k] if r else 0) for k in STATUSES}
+        total = sum(counts.values())
+        out.append({"date": d.isoformat(), **counts, "total": total,
+                    "percent": round((counts["present"] + counts["late"]) * 100 / total) if total else 0})
+    return out
+
+
+@app.get("/api/stats/student", dependencies=[Depends(admin)])
+async def stats_student(student_id: int):
+    """Bitta faol talabaning darslar bo'yicha davomat tarixi."""
+    found = await app.state.pool.fetchval("SELECT 1 FROM students WHERE id = $1 AND active", student_id)
+    if not found:
+        raise HTTPException(404, "Talaba topilmadi")
+    rows = await app.state.pool.fetch(
+        """
+        SELECT l.lesson_date AS d, l.pair_no, l.subject, a.status
+        FROM attendance a JOIN lessons l ON l.id = a.lesson_id
+        WHERE a.student_id = $1
+        ORDER BY l.lesson_date, l.pair_no
+        """, student_id,
+    )
+    return [{"date": r["d"].isoformat(), "pair_no": r["pair_no"],
+             "subject": r["subject"], "status": r["status"]} for r in rows]
+
+
 @app.get("/api/stats/day", dependencies=[Depends(admin)])
 async def stats_day(lesson_date: date):
     """Bitta kun: har bir dars bo'yicha sonlar va kelmaganlar ro'yxati."""

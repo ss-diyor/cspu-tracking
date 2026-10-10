@@ -1,0 +1,16 @@
+{
+  "name": "XTA 26/5 — Davomat",
+  "short_name": "26/5 Davomat",
+  "lang": "uz",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef2f5",
+  "theme_color": "#0f6b8f",
+  "description": "XTA 26/5 guruhining davomat va dars jadvali ilovasi.",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

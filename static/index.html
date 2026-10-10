@@ -11,7 +11,7 @@
   :root {
     --bg: #eef2f5; --surface: #ffffff; --ink: #14212b; --muted: #5d6b76; --line: #d5dde3;
     --accent: #0f6b8f;
-    --present: #1f8a4c; --absent: #c9342b; --excused: #b7791f; --unexcused: #7a3e8e;
+    --present: #1f8a4c; --late: #1d6fa5; --excused: #b7791f; --unexcused: #c9342b;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #0f171d; --surface: #17222a; --ink: #e8eef2; --muted: #93a2ad; --line: #2a3943; --accent: #4cb4d8; }
@@ -43,7 +43,7 @@
   .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
   .seg button { padding: 7px 2px; font-size: .85rem; }
   .seg button[data-s=present].on { background: var(--present); border-color: var(--present); color: #fff; }
-  .seg button[data-s=absent].on { background: var(--absent); border-color: var(--absent); color: #fff; }
+  .seg button[data-s=late].on { background: var(--late); border-color: var(--late); color: #fff; }
   .seg button[data-s=excused].on { background: var(--excused); border-color: var(--excused); color: #fff; }
   .seg button[data-s=unexcused].on { background: var(--unexcused); border-color: var(--unexcused); color: #fff; }
   .readonly .seg { pointer-events: none; }
@@ -59,6 +59,13 @@
   .badge { font-size: .85rem; padding: 2px 8px; border-radius: 99px; color: #fff; }
   .abs-row { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
   .abs-row span:last-child { font-weight: 500; }
+  .dtitle { font-weight: 500; word-break: break-word; }
+  .doc { margin-bottom: 10px; }
+  .doc .muted { margin: 2px 0; }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; }
+  .tag { font-size: .8rem; padding: 1px 8px; border-radius: 99px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+  .dacts { display: flex; gap: 6px; margin-top: 10px; }
+  .dacts .primary { flex: 1; }
   .day { margin: 0 0 14px; }
   .day h2 { margin: 0 0 6px; }
   .day.today h2::after { content: " — bugun"; color: var(--accent); font-weight: 500; }
@@ -84,6 +91,7 @@
     <button data-tab="att" class="on">Davomat</button>
     <button data-tab="stats">Statistika</button>
     <button data-tab="sch">Jadval</button>
+    <button data-tab="doc">Hujjatlar</button>
     <button data-tab="stu" class="admin-only hidden">Talabalar</button>
   </nav>
 
@@ -136,11 +144,14 @@
         <div class="muted" id="chartInfo" style="min-height:1.4em"></div>
       </div>
       <div class="card tbl" style="margin-top:12px"><table id="statTbl"></table></div>
-      <p class="muted">Foiz = "Bor" soni / belgilangan darslar soni.</p>
+      <p class="muted">Foiz = (Bor + Kechikdi) / belgilangan darslar soni.</p>
     </div>
 
     <div id="statDay" class="hidden">
-      <div class="row"><input type="date" id="statDate"></div>
+      <div class="row">
+        <input type="date" id="statDate">
+        <button id="xlsxWeek" class="primary" style="flex:0 0 auto">Haftalik Excel</button>
+      </div>
       <div id="dayOut"></div>
     </div>
   </section>
@@ -179,6 +190,60 @@
     <div id="schWeek"></div>
   </section>
 
+  <!-- HUJJATLAR -->
+  <section id="tab-doc" class="hidden">
+    <div class="card hidden" id="docGate">
+      <div class="muted">Hujjatlarni ko'rish uchun guruh kodini kiriting (kod guruh chatida).</div>
+      <div class="row" style="margin:8px 0 0">
+        <input id="gateCode" type="password" placeholder="Guruh kodi" autocomplete="off">
+        <button class="primary" id="gateBtn" style="flex:0 0 auto">Kirish</button>
+      </div>
+    </div>
+
+    <div id="docMain" class="hidden">
+      <div class="row">
+        <input id="docQ" type="search" placeholder="Qidirish: nom, izoh, teg">
+        <select id="docCat"><option value="">Barcha kategoriyalar</option></select>
+      </div>
+      <div class="lessons" id="docTags"></div>
+
+      <div class="admin-only hidden">
+        <div class="row">
+          <button class="primary" id="docAddBtn">+ Hujjat qo'shish</button>
+          <button id="catBtn">Kategoriyalar</button>
+        </div>
+
+        <div class="card hidden" id="docForm" style="margin-bottom:12px">
+          <div class="muted" id="docFormTitle">Yangi hujjat</div>
+          <div class="row" style="margin-top:8px"><input id="docTitle" placeholder="Nomi"></div>
+          <div class="row"><select id="docCategory"></select></div>
+          <div class="row"><input id="docTagsIn" placeholder="Teglar (vergul bilan): imtihon, 1-semestr"></div>
+          <div class="row"><textarea id="docNote" rows="2" placeholder="Qisqa izoh (ixtiyoriy)"></textarea></div>
+          <div id="docFileBox">
+            <div class="muted" id="docFileLabel">Fayl yuklash (25 MB gacha)</div>
+            <div class="row" style="margin-top:4px"><input type="file" id="docFile"></div>
+          </div>
+          <div id="docLinkBox">
+            <div class="muted" id="docLinkLabel">yoki havola</div>
+            <div class="row" style="margin-top:4px"><input id="docLink" type="url" placeholder="https://..."></div>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="primary" id="docSave">Saqlash</button>
+            <button id="docCancel">Bekor qilish</button>
+          </div>
+        </div>
+
+        <div class="card hidden" id="catBox" style="margin-bottom:12px">
+          <div class="row"><input id="catName" placeholder="Yangi kategoriya nomi">
+            <button class="primary" id="catAdd" style="flex:0 0 auto">Qo'shish</button></div>
+          <div id="catList"></div>
+        </div>
+      </div>
+
+      <div id="docList"></div>
+    </div>
+  </section>
+
   <!-- TALABALAR -->
   <section id="tab-stu" class="hidden">
     <div class="card">
@@ -192,7 +257,7 @@
 </main>
 
 <script>
-const LABEL = { present: "Bor", absent: "Yo'q", excused: "Sababli", unexcused: "Sababsiz" };
+const LABEL = { present: "Bor", late: "Kechikdi", excused: "Sababli", unexcused: "Sababsiz" };
 const $ = s => document.querySelector(s);
 let token = localStorage.getItem("adminToken") || "";
 let isAdmin = false;
@@ -203,7 +268,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
 const toast = t => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 2200); };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Admin-Token": token, ...(opts.headers || {}) } });
+  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Admin-Token": token, "X-Group-Code": groupCode, ...(opts.headers || {}) } });
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || "Xatolik yuz berdi"); }
   return res.json();
 }
@@ -221,10 +286,10 @@ async function checkToken(t) {
 }
 
 $("#loginBtn").onclick = async () => {
-  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); loadLessons(); return; }
+  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); return; }
   const t = prompt("Starosta paroli:");
   if (!t) return;
-  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); loadLessons(); }
+  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); }
   else toast("Parol noto'g'ri");
 };
 
@@ -232,9 +297,10 @@ $("#loginBtn").onclick = async () => {
 $("#tabs").onclick = e => {
   const b = e.target.closest("button[data-tab]"); if (!b) return;
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
-  ["att", "stats", "sch", "stu"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== b.dataset.tab));
+  ["att", "stats", "sch", "doc", "stu"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== b.dataset.tab));
   if (b.dataset.tab === "stats") refreshStats();
   if (b.dataset.tab === "sch") loadSchedule();
+  if (b.dataset.tab === "doc") openDocs();
   if (b.dataset.tab === "stu") loadStudents();
 };
 
@@ -357,12 +423,12 @@ async function loadStats() {
   if (!m) return;
   const [rows, tr] = await Promise.all([api("/api/stats?month=" + m), api("/api/stats/trend?month=" + m)]);
   trend = tr; drawChart();
-  $("#statTbl").innerHTML = `<tr><th>Talaba</th><th>Bor</th><th>Yo'q</th><th>Sababli</th><th>Sababsiz</th><th>%</th></tr>` +
-    rows.map(r => `<tr><td>${esc(r.full_name)}</td><td>${r.present}</td><td>${r.absent}</td><td>${r.excused}</td><td>${r.unexcused}</td><td class="pct">${r.percent ?? "—"}</td></tr>`).join("");
+  $("#statTbl").innerHTML = `<tr><th>Talaba</th><th>Bor</th><th>Kechikdi</th><th>Sababli</th><th>Sababsiz</th><th>%</th></tr>` +
+    rows.map(r => `<tr><td>${esc(r.full_name)}</td><td>${r.present}</td><td>${r.late}</td><td>${r.excused}</td><td>${r.unexcused}</td><td class="pct">${r.percent ?? "—"}</td></tr>`).join("");
 }
 // Grafik (oylik): har bir dars kuni uchun
 let trend = [], chartMode = "line";
-const COL = { present: "var(--present)", absent: "var(--absent)", excused: "var(--excused)", unexcused: "var(--unexcused)" };
+const COL = { present: "var(--present)", late: "var(--late)", excused: "var(--excused)", unexcused: "var(--unexcused)" };
 const dm = d => d.slice(8) + "." + d.slice(5, 7);
 
 function drawChart() {
@@ -387,11 +453,11 @@ function drawChart() {
     const pts = trend.map((t, i) => `${cx(i)},${y(t.percent)}`).join(" ");
     body = `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>` +
       trend.map((t, i) => `<circle data-i="${i}" cx="${cx(i)}" cy="${y(t.percent)}" r="7" fill="var(--accent)" stroke="var(--surface)" stroke-width="2" style="cursor:pointer"/>`).join("");
-    $("#legend").innerHTML = '<span><i style="background:var(--accent)"></i>Kunlik davomat foizi ("Bor")</span>';
+    $("#legend").innerHTML = '<span><i style="background:var(--accent)"></i>Kunlik davomat foizi (Bor + Kechikdi)</span>';
   } else {
     body = trend.map((t, i) => {
       let acc = 0;
-      return ["present", "excused", "unexcused", "absent"].map(k => {
+      return ["present", "late", "excused", "unexcused"].map(k => {
         const p = t.total ? t[k] * 100 / t.total : 0;
         const r = `<rect data-i="${i}" x="${cx(i) - bw * 0.35}" width="${bw * 0.7}" y="${y(acc + p)}" height="${y(acc) - y(acc + p)}" fill="${COL[k]}" style="cursor:pointer"/>`;
         acc += p; return r;
@@ -405,7 +471,7 @@ function drawChart() {
 $("#chart").onclick = e => {
   const el = e.target.closest("[data-i]"); if (!el) return;
   const t = trend[+el.dataset.i];
-  $("#chartInfo").textContent = `${dm(t.date)} — Bor ${t.present}, Yo'q ${t.absent}, Sababli ${t.excused}, Sababsiz ${t.unexcused} (${t.percent}%)`;
+  $("#chartInfo").textContent = `${dm(t.date)} — Bor ${t.present}, Kechikdi ${t.late}, Sababli ${t.excused}, Sababsiz ${t.unexcused} (${t.percent}%)`;
 };
 
 $("#chartMode").onclick = e => {
@@ -428,6 +494,7 @@ async function loadDay() {
   }).join("") : '<div class="card muted">Bu kunda dars qo\'shilmagan.</div>';
 }
 $("#statDate").onchange = loadDay;
+$("#xlsxWeek").onclick = () => { if ($("#statDate").value) location.href = "/api/export/week?day=" + $("#statDate").value; };
 
 function refreshStats() { $("#statDay").classList.contains("hidden") ? loadStats() : loadDay(); }
 
@@ -555,6 +622,200 @@ $("#tab-sch").onclick = async e => {
     try { await api(`/api/schedule/${del.dataset.del}`, { method: "DELETE" }); toast("O'chirildi"); loadSchedule(); }
     catch (err) { toast(err.message); }
   }
+};
+
+// Hujjatlar
+let groupCode = localStorage.getItem("groupCode") || "";
+let docs = [], cats = [], docTag = "", docEdit = null;
+
+async function apiForm(path, fd, method = "POST") {
+  const res = await fetch(path, { method, body: fd, headers: { "X-Admin-Token": token, "X-Group-Code": groupCode } });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || "Xatolik yuz berdi"); }
+  return res.json();
+}
+
+function showGate(msg) {
+  $("#docMain").classList.add("hidden");
+  $("#docGate").classList.remove("hidden");
+  if (msg) toast(msg);
+}
+
+async function openDocs() {
+  if (!isAdmin && !groupCode) return showGate();
+  try { await api("/api/access"); }
+  catch (e) {
+    if (!isAdmin) { groupCode = ""; localStorage.removeItem("groupCode"); return showGate(e.message); }
+    return toast(e.message);
+  }
+  $("#docGate").classList.add("hidden");
+  $("#docMain").classList.remove("hidden");
+  await loadDocs();
+}
+function refreshDocsIfOpen() { if (!$("#tab-doc").classList.contains("hidden")) openDocs(); }
+
+$("#gateBtn").onclick = () => {
+  const code = $("#gateCode").value.trim();
+  if (!code) return;
+  if (!/^[\x20-\x7E]+$/.test(code)) return toast("Kod faqat lotin harf va raqamlardan iborat");
+  groupCode = code; localStorage.setItem("groupCode", code);
+  $("#gateCode").value = "";
+  openDocs();
+};
+$("#gateCode").onkeydown = e => { if (e.key === "Enter") $("#gateBtn").click(); };
+
+async function loadDocs() {
+  [cats, docs] = await Promise.all([api("/api/categories"), api("/api/documents")]);
+  fillCats(); renderDocs();
+}
+
+function fillCats() {
+  const cur = $("#docCat").value;
+  $("#docCat").innerHTML = '<option value="">Barcha kategoriyalar</option>' + cats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  $("#docCat").value = cats.some(c => String(c.id) === cur) ? cur : "";
+  const f = $("#docCategory").value;
+  $("#docCategory").innerHTML = '<option value="">Kategoriyasiz</option>' + cats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  $("#docCategory").value = f;
+  $("#catList").innerHTML = cats.map(c => `<div class="stu" style="display:flex;gap:6px;align-items:center"><span style="flex:1">${esc(c.name)}</span><button data-catdel="${c.id}" data-name="${esc(c.name)}" aria-label="O'chirish">✕</button></div>`).join("") || '<span class="muted">Kategoriya yo\'q.</span>';
+}
+
+function kindLabel(d) {
+  if (d.kind === "link") return "Havola";
+  const m = d.mime || "", n = (d.file_name || "").toLowerCase();
+  if (m === "application/pdf" || n.endsWith(".pdf")) return "PDF";
+  if (m.startsWith("image/")) return "Rasm";
+  if (/\.(docx?|odt)$/.test(n)) return "Word";
+  if (/\.(xlsx?|csv)$/.test(n)) return "Excel";
+  if (/\.pptx?$/.test(n)) return "PowerPoint";
+  return "Fayl";
+}
+const fmtSize = b => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+const fmtDate = s => { const d = new Date(s); return String(d.getDate()).padStart(2, "0") + "." + String(d.getMonth() + 1).padStart(2, "0") + "." + d.getFullYear(); };
+
+function renderDocs() {
+  const q = $("#docQ").value.trim().toLowerCase(), cat = $("#docCat").value;
+  const allTags = [...new Set(docs.flatMap(d => d.tags))].sort((a, b) => a.localeCompare(b));
+  if (docTag && !allTags.includes(docTag)) docTag = "";
+  $("#docTags").innerHTML = allTags.map(t => `<button data-tag="${esc(t)}" class="${t === docTag ? "on" : ""}">#${esc(t)}</button>`).join("");
+
+  const list = docs.filter(d =>
+    (!cat || String(d.category_id) === cat) &&
+    (!docTag || d.tags.includes(docTag)) &&
+    (!q || [d.title, d.note, d.file_name || "", ...d.tags].join(" ").toLowerCase().includes(q)));
+
+  $("#docList").innerHTML = list.map(d => {
+    const meta = [d.category ? esc(d.category) : "", kindLabel(d) + (d.size ? " · " + fmtSize(d.size) : ""), fmtDate(d.created_at)].filter(Boolean).join(" · ");
+    return `<div class="card doc">
+      <div class="dtitle">${d.pinned ? "📌 " : ""}${esc(d.title)}</div>
+      <div class="muted">${meta}</div>
+      ${d.note ? `<div>${esc(d.note)}</div>` : ""}
+      ${d.tags.length ? `<div class="tags">${d.tags.map(t => `<span class="tag">#${esc(t)}</span>`).join("")}</div>` : ""}
+      <div class="dacts">
+        <button class="primary" data-open="${d.id}">Ochish</button>
+        <button class="admin-only${isAdmin ? "" : " hidden"}" data-pin="${d.id}" aria-label="Mahkamlash">${d.pinned ? "Yechish" : "📌"}</button>
+        <button class="admin-only${isAdmin ? "" : " hidden"}" data-dedit="${d.id}" aria-label="Tahrirlash">✎</button>
+        <button class="admin-only${isAdmin ? "" : " hidden"}" data-ddel="${d.id}" aria-label="O'chirish">✕</button>
+      </div></div>`;
+  }).join("") || `<div class="card muted">${docs.length ? "Hech narsa topilmadi." : "Hozircha hujjat yo'q."}</div>`;
+}
+
+$("#docQ").oninput = renderDocs;
+$("#docCat").onchange = renderDocs;
+$("#docTags").onclick = e => { const b = e.target.closest("[data-tag]"); if (!b) return; docTag = docTag === b.dataset.tag ? "" : b.dataset.tag; renderDocs(); };
+
+function openUrl(u) { const w = window.open(u, "_blank"); if (w) w.opener = null; else location.href = u; }
+
+const docBody = (d, over = {}) => ({ title: d.title, category_id: d.category_id, tags: d.tags, note: d.note, pinned: d.pinned, url: d.url, ...over });
+
+$("#docList").onclick = async e => {
+  const open = e.target.closest("[data-open]"), pin = e.target.closest("[data-pin]"),
+        ed = e.target.closest("[data-dedit]"), del = e.target.closest("[data-ddel]");
+  try {
+    if (open) {
+      const d = docs.find(x => x.id === +open.dataset.open); if (!d) return;
+      if (d.kind === "link") return openUrl(d.url);
+      const r = await api(`/api/documents/${d.id}/open`);
+      openUrl(r.url);
+    }
+    if (pin) {
+      const d = docs.find(x => x.id === +pin.dataset.pin);
+      await api(`/api/documents/${d.id}`, { method: "PUT", body: JSON.stringify(docBody(d, { pinned: !d.pinned })) });
+      await loadDocs();
+    }
+    if (ed) startEdit(docs.find(x => x.id === +ed.dataset.dedit));
+    if (del) {
+      const d = docs.find(x => x.id === +del.dataset.ddel);
+      if (confirm(`"${d.title}" o'chiriladi. Davom etasizmi?`)) {
+        await api(`/api/documents/${d.id}`, { method: "DELETE" });
+        toast("O'chirildi"); await loadDocs();
+      }
+    }
+  } catch (err) { toast(err.message); }
+};
+
+// Hujjat qo'shish / tahrirlash formasi
+function resetDocForm() {
+  docEdit = null;
+  ["docTitle", "docTagsIn", "docNote", "docLink", "docFile"].forEach(id => $("#" + id).value = "");
+  $("#docCategory").value = "";
+  $("#docFormTitle").textContent = "Yangi hujjat";
+  $("#docFileLabel").textContent = "Fayl yuklash (25 MB gacha)";
+  $("#docLinkLabel").textContent = "yoki havola";
+  $("#docFileBox").classList.remove("hidden"); $("#docLinkBox").classList.remove("hidden");
+  $("#docSave").disabled = false; $("#docSave").textContent = "Saqlash";
+}
+
+function startEdit(d) {
+  resetDocForm();
+  docEdit = d;
+  $("#docFormTitle").textContent = "Hujjatni tahrirlash";
+  $("#docTitle").value = d.title; $("#docCategory").value = d.category_id ?? "";
+  $("#docTagsIn").value = d.tags.join(", "); $("#docNote").value = d.note;
+  if (d.kind === "link") { $("#docFileBox").classList.add("hidden"); $("#docLinkLabel").textContent = "Havola"; $("#docLink").value = d.url || ""; }
+  else { $("#docLinkBox").classList.add("hidden"); $("#docFileLabel").textContent = `Faylni almashtirish (ixtiyoriy). Hozirgi: ${d.file_name || ""}`; }
+  $("#docForm").classList.remove("hidden");
+  $("#docForm").scrollIntoView({ behavior: "smooth" });
+}
+
+$("#docAddBtn").onclick = () => { resetDocForm(); $("#docForm").classList.toggle("hidden"); $("#catBox").classList.add("hidden"); };
+$("#docCancel").onclick = () => { resetDocForm(); $("#docForm").classList.add("hidden"); };
+
+$("#docSave").onclick = async () => {
+  const title = $("#docTitle").value.trim();
+  if (!title) return toast("Hujjat nomini yozing");
+  const file = $("#docFile").files[0], link = $("#docLink").value.trim();
+  const btn = $("#docSave"); btn.disabled = true; btn.textContent = file ? "Yuklanmoqda..." : "Saqlanmoqda...";
+  try {
+    if (docEdit) {
+      const tags = $("#docTagsIn").value.split(",");
+      await api(`/api/documents/${docEdit.id}`, { method: "PUT", body: JSON.stringify(docBody(docEdit, { title, category_id: $("#docCategory").value ? +$("#docCategory").value : null, tags, note: $("#docNote").value, url: link || docEdit.url })) });
+      if (file && docEdit.kind === "file") { const fd = new FormData(); fd.append("file", file); await apiForm(`/api/documents/${docEdit.id}/file`, fd); }
+    } else {
+      if (!file && !link) throw new Error("Fayl tanlang yoki havola kiriting");
+      if (file && link) throw new Error("Fayl yoki havoladan faqat bittasini kiriting");
+      const fd = new FormData();
+      fd.append("title", title); fd.append("category_id", $("#docCategory").value);
+      fd.append("tags", $("#docTagsIn").value); fd.append("note", $("#docNote").value);
+      if (file) fd.append("file", file); else fd.append("link", link);
+      await apiForm("/api/documents", fd);
+    }
+    toast("Saqlandi");
+    resetDocForm(); $("#docForm").classList.add("hidden");
+    await loadDocs();
+  } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = "Saqlash"; }
+};
+
+// Kategoriyalar
+$("#catBtn").onclick = () => { $("#catBox").classList.toggle("hidden"); $("#docForm").classList.add("hidden"); };
+$("#catAdd").onclick = async () => {
+  const name = $("#catName").value.trim(); if (!name) return;
+  try { await api("/api/categories", { method: "POST", body: JSON.stringify({ name }) }); $("#catName").value = ""; await loadDocs(); }
+  catch (e) { toast(e.message); }
+};
+$("#catList").onclick = async e => {
+  const b = e.target.closest("[data-catdel]"); if (!b) return;
+  if (!confirm(`"${b.dataset.name}" kategoriyasi o'chiriladi. Hujjatlar o'chmaydi, kategoriyasiz qoladi. Davom etasizmi?`)) return;
+  try { await api(`/api/categories/${b.dataset.catdel}`, { method: "DELETE" }); await loadDocs(); }
+  catch (err) { toast(err.message); }
 };
 
 // Boshlash

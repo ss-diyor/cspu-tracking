@@ -395,7 +395,7 @@
 <script>
 const LABEL = { present: "Bor", late: "Kechikdi", excused: "Sababli", unexcused: "Sababsiz" };
 const $ = s => document.querySelector(s);
-let token = localStorage.getItem("adminToken") || "";
+let token = ""; // Admin autentifikatsiyasi HttpOnly cookie orqali amalga oshadi.
 let studentCode = localStorage.getItem("studentCode") || "";
 let isAdmin = false;
 let lessonId = null;
@@ -434,17 +434,17 @@ function wipeAdminData() {
   statRows = []; trend = [];
 }
 
-// admin tokenni tekshirish: bo'sh talaba ro'yxatini yuborib ko'ramiz
+// Admin paroli serverda tekshiriladi va HttpOnly sessiya cookie'si o'rnatiladi.
 async function checkToken(t) {
-  const r = await fetch("/api/students", { method: "POST", headers: { "Content-Type": "application/json", "X-Admin-Token": t }, body: JSON.stringify({ names: [] }) });
+  const r = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: t }) });
   return r.ok;
 }
 
 $("#loginBtn").onclick = async () => {
-  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); wipeAdminData(); refreshDocsIfOpen(); return; }
+  if (isAdmin) { await fetch("/api/auth/logout", { method: "POST" }); token = ""; setAdmin(false); wipeAdminData(); refreshDocsIfOpen(); return; }
   const t = prompt("Starosta paroli:");
   if (!t) return;
-  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); showTab("att"); refreshDocsIfOpen(); }
+  if (await checkToken(t)) { setAdmin(true); showTab("att"); refreshDocsIfOpen(); }
   else toast("Parol noto'g'ri");
 };
 
@@ -1205,7 +1205,8 @@ $("#date").onchange = () => { lessonId = null; loadLessons(); };
 loadTodayWidget();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 (async () => {
-  if (token && await checkToken(token)) setAdmin(true); else { token = ""; setAdmin(false); }
+  try { const r = await fetch("/api/auth/session"); if (r.ok) setAdmin(true); else setAdmin(false); }
+  catch { setAdmin(false); }
 })();
 </script>
 </body>

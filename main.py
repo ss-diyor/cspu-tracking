@@ -6,6 +6,7 @@ import re
 import secrets
 import time as pytime
 import uuid
+from collections import defaultdict, deque
 from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 from copy import copy
@@ -13,7 +14,7 @@ from datetime import date, time, timedelta
 
 import asyncpg
 import httpx
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import load_workbook
@@ -24,6 +25,39 @@ from pydantic import BaseModel
 log = logging.getLogger("uvicorn.error")     # Render loglarida ko'rinadi
 DATABASE_URL = os.environ["DATABASE_URL"]
 ADMIN_TOKEN = os.environ["ADMIN_TOKEN"]
+SESSION_TTL = int(os.environ.get("ADMIN_SESSION_TTL", "43200"))
+ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.environ.get("ALLOWED_ORIGINS", "").split(",") if x.strip()}
+_admin_sessions: dict[str, float] = {}
+_request_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+_login_failures: dict[str, deque[float]] = defaultdict(deque)
+
+
+def client_ip(request: Request) -> str:
+    # Proxy oldidagi X-Forwarded-For faqat ishonchli deployment proxy ishlatilganda qo'llanadi.
+    xff = request.headers.get("x-forwarded-for", "")
+    return xff.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+def _allow(bucket: dict, key, limit: int, window: int) -> bool:
+    now = pytime.monotonic()
+    q = bucket[key]
+    while q and now - q[0] >= window:
+        q.popleft()
+    if len(q) >= limit:
+        return False
+    q.append(now)
+    return True
+
+
+def session_token(request: Request, cookie: str = "") -> str:
+    sid = cookie or request.headers.get("X-Admin-Token", "")
+    if cookie:
+        expires = _admin_sessions.get(cookie, 0)
+        if expires > pytime.time():
+            return ADMIN_TOKEN
+        _admin_sessions.pop(cookie, None)
+    # Eski header sessiyalari faqat API mosligi uchun qoldirildi; yangi frontend HttpOnly cookie ishlatadi.
+    return sid
 
 # present = Bor, late = Kechikdi, excused = Sababli (kelmagan), unexcused = Sababsiz (kelmagan)
 # Davomat foizi = (Bor + Kechikdi) / belgilangan darslar. "Jami yo'q" = Sababli + Sababsiz.
@@ -37,6 +71,18 @@ async def lifespan(app: FastAPI):
     app.state.pool = await asyncpg.create_pool(
         DATABASE_URL, min_size=1, max_size=5, statement_cache_size=0
     )
+    await app.state.pool.execute(
+        """CREATE TABLE IF NOT EXISTS audit_log (
+            id BIGSERIAL PRIMARY KEY,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            ip TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            entity TEXT NOT NULL DEFAULT '',
+            entity_id INT,
+            detail TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    await app.state.pool.execute("CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log (created_at DESC)")
     app.state.http = httpx.AsyncClient(timeout=60)
     if SUPABASE_URL:
         log.info("Supabase Storage manzili: %s", SUPABASE_URL)
@@ -49,9 +95,92 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Guruh sayti", lifespan=lifespan)
 
 
-def admin(x_admin_token: str = Header(default="")):
-    if not secrets.compare_digest(x_admin_token.encode(), ADMIN_TOKEN.encode()):
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        ip = client_ip(request)
+        bucket = "login" if request.url.path == "/api/auth/login" else "api"
+        limits = (5, 300) if bucket == "login" else (120, 60)
+        if not _allow(_request_buckets, (ip, bucket), *limits):
+            log.warning("Rate limit exceeded: ip=%s path=%s", ip, request.url.path)
+            return Response("Too many requests", status_code=429, media_type="text/plain")
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin:
+                origin = origin.rstrip("/")
+                host_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+                if origin not in ALLOWED_ORIGINS and origin != host_origin:
+                    return Response("CSRF origin rejected", status_code=403, media_type="text/plain")
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+def admin(request: Request, cspu_session: str = Cookie(default=""), x_admin_token: str = Header(default="")):
+    supplied = session_token(request, cspu_session) or x_admin_token
+    if not secrets.compare_digest(supplied.encode(), ADMIN_TOKEN.encode()):
         raise HTTPException(401, "Parol noto'g'ri")
+
+
+async def audit(request: Request, action: str, entity: str = "", entity_id: int | None = None, detail: str = ""):
+    try:
+        await app.state.pool.execute(
+            "INSERT INTO audit_log (ip, action, entity, entity_id, detail) VALUES ($1, $2, $3, $4, $5)",
+            client_ip(request), action, entity, entity_id, detail[:1000],
+        )
+    except Exception:
+        log.exception("Audit log yozilmadi: action=%s entity=%s", action, entity)
+
+
+class LoginIn(BaseModel):
+    password: str
+
+
+@app.post("/api/auth/login")
+async def login(body: LoginIn, request: Request, response: Response):
+    ip = client_ip(request)
+    if not _allow(_login_failures, ip, 5, 300):
+        raise HTTPException(429, "Juda ko'p urinish. 5 daqiqadan keyin qayta urinib ko'ring")
+    if not secrets.compare_digest(body.password.encode(), ADMIN_TOKEN.encode()):
+        await audit(request, "login_failed", detail="admin password")
+        raise HTTPException(401, "Parol noto'g'ri")
+    _login_failures.pop(ip, None)
+    sid = secrets.token_urlsafe(32)
+    _admin_sessions[sid] = pytime.time() + SESSION_TTL
+    response.set_cookie("cspu_session", sid, max_age=SESSION_TTL, httponly=True,
+                        secure=request.url.scheme == "https", samesite="lax", path="/")
+    await audit(request, "login_success", detail="admin session")
+    return {"ok": True}
+
+
+@app.get("/api/auth/session")
+async def auth_session(request: Request, cspu_session: str = Cookie(default="")):
+    if session_token(request, cspu_session) != ADMIN_TOKEN:
+        raise HTTPException(401, "Sessiya tugagan")
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response, cspu_session: str = Cookie(default="")):
+    _admin_sessions.pop(cspu_session, None)
+    response.delete_cookie("cspu_session", path="/")
+    await audit(request, "logout", detail="admin session")
+    return {"ok": True}
+
+
+@app.get("/api/audit", dependencies=[Depends(admin)])
+async def audit_log(limit: int = 100):
+    limit = min(500, max(1, limit))
+    rows = await app.state.pool.fetch(
+        "SELECT id, created_at, ip, action, entity, entity_id, detail "
+        "FROM audit_log ORDER BY created_at DESC LIMIT $1", limit
+    )
+    return [dict(r) for r in rows]
 
 
 def month_range(month: str) -> tuple[date, date]:
@@ -141,13 +270,14 @@ async def list_lessons(lesson_date: date):
 
 
 @app.post("/api/lessons", dependencies=[Depends(admin)])
-async def create_lesson(body: LessonIn):
+async def create_lesson(body: LessonIn, request: Request):
     row = await app.state.pool.fetchrow(
         "INSERT INTO lessons (lesson_date, pair_no, subject) VALUES ($1, $2, $3) "
         "ON CONFLICT (lesson_date, pair_no) DO UPDATE SET subject = EXCLUDED.subject "
         "RETURNING id, lesson_date, pair_no, subject",
         body.lesson_date, body.pair_no, body.subject.strip(),
     )
+    await audit(request, "lesson_create", "lesson", row["id"], f"{body.lesson_date} pair={body.pair_no}")
     return dict(row)
 
 
@@ -157,7 +287,7 @@ class LessonEdit(BaseModel):
 
 
 @app.put("/api/lessons/{lesson_id}", dependencies=[Depends(admin)])
-async def edit_lesson(lesson_id: int, body: LessonEdit):
+async def edit_lesson(lesson_id: int, body: LessonEdit, request: Request):
     if not body.subject.strip():
         raise HTTPException(400, "Fan nomini yozing")
     try:
@@ -169,13 +299,15 @@ async def edit_lesson(lesson_id: int, body: LessonEdit):
         raise HTTPException(409, "Bu juftlikda boshqa dars bor")
     if res == "UPDATE 0":
         raise HTTPException(404, "Dars topilmadi")
+    await audit(request, "lesson_edit", "lesson", lesson_id, f"subject={body.subject.strip()} pair={body.pair_no}")
     return {"ok": True}
 
 
 @app.delete("/api/lessons/{lesson_id}", dependencies=[Depends(admin)])
-async def delete_lesson(lesson_id: int):
+async def delete_lesson(lesson_id: int, request: Request):
     # attendance yozuvlari ON DELETE CASCADE bilan birga o'chadi
     await app.state.pool.execute("DELETE FROM lessons WHERE id = $1", lesson_id)
+    await audit(request, "lesson_delete", "lesson", lesson_id)
     return {"ok": True}
 
 
@@ -193,7 +325,7 @@ async def get_attendance(lesson_id: int):
 
 
 @app.put("/api/lessons/{lesson_id}/attendance", dependencies=[Depends(admin)])
-async def save_attendance(lesson_id: int, body: AttendanceIn):
+async def save_attendance(lesson_id: int, body: AttendanceIn, request: Request):
     for r in body.records:
         if r.status not in STATUSES:
             raise HTTPException(400, f"Noto'g'ri status: {r.status}")
@@ -213,6 +345,7 @@ async def save_attendance(lesson_id: int, body: AttendanceIn):
                 )
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(400, "Talaba topilmadi")
+    await audit(request, "attendance_save", "lesson", lesson_id, f"records={len(body.records)}")
     return {"saved": len(body.records)}
 
 
@@ -702,7 +835,7 @@ async def get_schedule():
 
 
 @app.post("/api/schedule", dependencies=[Depends(admin)])
-async def add_schedule(body: ScheduleIn):
+async def add_schedule(body: ScheduleIn, request: Request):
     check_schedule(body)
     row = await app.state.pool.fetchrow(
         "INSERT INTO schedule (weekday, pair_no, start_time, end_time, subject, room, teacher) "
@@ -710,11 +843,12 @@ async def add_schedule(body: ScheduleIn):
         body.weekday, body.pair_no, body.start_time, body.end_time,
         body.subject.strip(), body.room.strip(), body.teacher.strip(),
     )
+    await audit(request, "schedule_create", "schedule", row["id"], f"weekday={body.weekday} pair={body.pair_no}")
     return {"id": row["id"]}
 
 
 @app.put("/api/schedule/{item_id}", dependencies=[Depends(admin)])
-async def update_schedule(item_id: int, body: ScheduleIn):
+async def update_schedule(item_id: int, body: ScheduleIn, request: Request):
     check_schedule(body)
     res = await app.state.pool.execute(
         "UPDATE schedule SET weekday=$1, pair_no=$2, start_time=$3, end_time=$4, "
@@ -724,12 +858,14 @@ async def update_schedule(item_id: int, body: ScheduleIn):
     )
     if res == "UPDATE 0":
         raise HTTPException(404, "Topilmadi")
+    await audit(request, "schedule_edit", "schedule", item_id, f"weekday={body.weekday} pair={body.pair_no}")
     return {"ok": True}
 
 
 @app.delete("/api/schedule/{item_id}", dependencies=[Depends(admin)])
-async def delete_schedule(item_id: int):
+async def delete_schedule(item_id: int, request: Request):
     await app.state.pool.execute("DELETE FROM schedule WHERE id=$1", item_id)
+    await audit(request, "schedule_delete", "schedule", item_id)
     return {"ok": True}
 
 
@@ -750,22 +886,26 @@ SUPABASE_URL = clean_supabase_url(os.environ.get("SUPABASE_URL", ""))
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip().strip("\"'").strip()
 BUCKET = os.environ.get("STORAGE_BUCKET", "").strip() or "documents"
 MAX_UPLOAD = 25 * 1024 * 1024   # 25 MB
+SAFE_UPLOAD_MIMES = {
+    "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp",
+    "text/plain", "text/csv", "application/zip", "application/msword",
+    "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
 
 _fails: dict[str, list[float]] = {}   # guruh kodini taxmin qilishdan himoya (IP bo'yicha)
-
-
-def client_ip(request: Request) -> str:
-    xff = request.headers.get("x-forwarded-for", "")
-    return xff.split(",")[0].strip() or (request.client.host if request.client else "?")
 
 
 def member(
     request: Request,
     x_group_code: str = Header(default=""),
     x_admin_token: str = Header(default=""),
+    cspu_session: str = Cookie(default=""),
 ):
     """Starosta (admin paroli) yoki guruh kodi bilan kirgan talaba."""
-    if x_admin_token and secrets.compare_digest(x_admin_token.encode(), ADMIN_TOKEN.encode()):
+    if session_token(request, cspu_session) == ADMIN_TOKEN or (x_admin_token and secrets.compare_digest(x_admin_token.encode(), ADMIN_TOKEN.encode())):
         return "admin"
     ip, now = client_ip(request), pytime.time()
     recent = [t for t in _fails.get(ip, []) if now - t < 300]
@@ -875,6 +1015,24 @@ async def read_upload(file: UploadFile):
     ext = re.sub(r"[^a-z0-9]", "", os.path.splitext(name)[1].lower())[:8]
     path = uuid.uuid4().hex + (f".{ext}" if ext else "")      # saqlash nomi har doim xavfsiz (ASCII)
     mime = file.content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+    if mime not in SAFE_UPLOAD_MIMES:
+        raise HTTPException(415, "Bu fayl turi qo'llab-quvvatlanmaydi")
+    if mime == "application/pdf" and not data.startswith(b"%PDF-"):
+        raise HTTPException(415, "PDF fayl imzosi noto'g'ri")
+    if mime == "image/png" and not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(415, "PNG fayl imzosi noto'g'ri")
+    if mime == "image/jpeg" and not data.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(415, "JPEG fayl imzosi noto'g'ri")
+    if mime == "image/gif" and not data.startswith((b"GIF87a", b"GIF89a")):
+        raise HTTPException(415, "GIF fayl imzosi noto'g'ri")
+    if mime in {"image/webp"} and not (data.startswith(b"RIFF") and data[8:12] == b"WEBP"):
+        raise HTTPException(415, "WebP fayl imzosi noto'g'ri")
+    if mime in {"application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"} and not data.startswith(b"PK"):
+        raise HTTPException(415, "Office fayl imzosi noto'g'ri")
+    if mime in {"text/plain", "text/csv"} and b"\x00" in data:
+        raise HTTPException(415, "Matn fayli imzosi noto'g'ri")
     return data, name, mime, path
 
 

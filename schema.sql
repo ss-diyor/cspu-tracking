@@ -71,3 +71,15 @@ ALTER TABLE attendance ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
 -- Talabaning shaxsiy profili uchun kod
 ALTER TABLE students ADD COLUMN IF NOT EXISTS access_code TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_students_access_code ON students (access_code) WHERE access_code IS NOT NULL;
+
+-- Admin va muhim o'zgarishlar uchun audit jurnali
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ip         TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL,
+    entity     TEXT NOT NULL DEFAULT '',
+    entity_id  INT,
+    detail     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log (created_at DESC);

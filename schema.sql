@@ -65,6 +65,5 @@ CREATE INDEX IF NOT EXISTS idx_documents_order ON documents (pinned DESC, create
 ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE documents  ENABLE ROW LEVEL SECURITY;
 
--- Sababli kelmaganlik uchun sabab va hujjat (faqat starosta ko'radi)
-ALTER TABLE attendance ADD COLUMN IF NOT EXISTS note   TEXT NOT NULL DEFAULT '';
-ALTER TABLE attendance ADD COLUMN IF NOT EXISTS doc_id INT REFERENCES documents(id) ON DELETE SET NULL;
+-- Sababli kelmaganlik uchun sabab (faqat starosta ko'radi)
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';

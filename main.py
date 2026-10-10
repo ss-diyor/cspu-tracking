@@ -1,23 +1,31 @@
 import io
+import mimetypes
 import os
+import re
 import secrets
+import time as pytime
+import uuid
 from contextlib import asynccontextmanager
-from datetime import date, time
+from copy import copy
+from datetime import date, time, timedelta
 
 import asyncpg
-from fastapi import Depends, FastAPI, Header, HTTPException
+import httpx
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.properties import PageSetupProperties
 from pydantic import BaseModel
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 ADMIN_TOKEN = os.environ["ADMIN_TOKEN"]
 
-# present = Bor, absent = Yo'q (sabab hali noma'lum), excused = Sababli, unexcused = Sababsiz
-STATUSES = {"present", "absent", "excused", "unexcused"}
-LABELS = {"present": "Bor", "absent": "Yo'q", "excused": "Sababli", "unexcused": "Sababsiz"}
+# present = Bor, late = Kechikdi, excused = Sababli (kelmagan), unexcused = Sababsiz (kelmagan)
+# Davomat foizi = (Bor + Kechikdi) / belgilangan darslar. "Jami yo'q" = Sababli + Sababsiz.
+STATUSES = {"present", "late", "excused", "unexcused"}
+LABELS = {"present": "Bor", "late": "Kechikdi", "excused": "Sababli", "unexcused": "Sababsiz"}
 
 
 @asynccontextmanager
@@ -26,7 +34,10 @@ async def lifespan(app: FastAPI):
     app.state.pool = await asyncpg.create_pool(
         DATABASE_URL, min_size=1, max_size=5, statement_cache_size=0
     )
+    app.state.http = httpx.AsyncClient(timeout=60)
+    await ensure_bucket(app.state.http)
     yield
+    await app.state.http.aclose()
     await app.state.pool.close()
 
 
@@ -197,7 +208,7 @@ async def month_stats(month: str):
         """
         SELECT s.id, s.full_name,
                COUNT(*) FILTER (WHERE a.status = 'present')   AS present,
-               COUNT(*) FILTER (WHERE a.status = 'absent')    AS absent,
+               COUNT(*) FILTER (WHERE a.status = 'late')      AS late,
                COUNT(*) FILTER (WHERE a.status = 'excused')   AS excused,
                COUNT(*) FILTER (WHERE a.status = 'unexcused') AS unexcused
         FROM students s
@@ -215,8 +226,8 @@ async def month_stats(month: str):
     out = []
     for r in rows:
         d = dict(r)
-        total = d["present"] + d["absent"] + d["excused"] + d["unexcused"]
-        d["percent"] = round(d["present"] * 100 / total) if total else None
+        total = d["present"] + d["late"] + d["excused"] + d["unexcused"]
+        d["percent"] = round((d["present"] + d["late"]) * 100 / total) if total else None
         out.append(d)
     return out
 
@@ -234,7 +245,7 @@ async def stats_trend(month: str):
         """
         SELECT l.lesson_date AS d,
                COUNT(*) FILTER (WHERE a.status = 'present')   AS present,
-               COUNT(*) FILTER (WHERE a.status = 'absent')    AS absent,
+               COUNT(*) FILTER (WHERE a.status = 'late')      AS late,
                COUNT(*) FILTER (WHERE a.status = 'excused')   AS excused,
                COUNT(*) FILTER (WHERE a.status = 'unexcused') AS unexcused
         FROM lessons l
@@ -248,13 +259,13 @@ async def stats_trend(month: str):
     )
     out = []
     for r in rows:
-        total = r["present"] + r["absent"] + r["excused"] + r["unexcused"]
+        total = r["present"] + r["late"] + r["excused"] + r["unexcused"]
         out.append({
             "date": r["d"].isoformat(),
-            "present": r["present"], "absent": r["absent"],
+            "present": r["present"], "late": r["late"],
             "excused": r["excused"], "unexcused": r["unexcused"],
             "total": total,
-            "percent": round(r["present"] * 100 / total) if total else 0,
+            "percent": round((r["present"] + r["late"]) * 100 / total) if total else 0,
         })
     return out
 
@@ -288,77 +299,180 @@ async def stats_day(lesson_date: date):
 
 
 # ---------- Excel ----------
-@app.get("/api/export")
-async def export_xlsx(month: str):
-    start, end = month_range(month)
+# Hisobot template_week.xlsx shablonidagi chop etiladigan haftalik jadval ko'rinishida chiqadi.
+# Shablonni o'z faylingiz bilan almashtirsangiz bo'ladi (tuzilmasini saqlang: 4-qatordan sarlavha,
+# 7-qatordan talabalar, C:V ustunlari Du-Ju x 4 juftlik, W = "Jami yo'q", X = "Izoh").
+TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template_week.xlsx")
+SYMBOL = {"present": "+", "late": "K", "excused": "S", "unexcused": "X"}
+DAY_COL0 = [3, 7, 11, 15, 19]   # Dushanba..Juma bloklarining birinchi ustuni
+TEMPLATE_ROWS = 21              # shablondagi talabalar qatorlari (7..27)
+THIN = Side(style="thin")
+
+
+def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict):
+    """Bitta haftalik varaqni to'ldiradi.
+    lesson_ids: {(sana, juftlik): dars_id}, att: {(dars_id, talaba_id): status}"""
+    days = [monday + timedelta(days=i) for i in range(5)]
+    friday = days[-1]
+    ws.title = f"{monday:%d.%m}-{friday:%d.%m}"
+    ws["A2"] = (f"Hafta:  {monday:%d} . {monday:%m} . {monday:%Y}  dan  "
+                f"{friday:%d} . {friday:%m} . {friday:%Y}  gacha")
+    for i, d in enumerate(days):
+        ws.cell(5, DAY_COL0[i]).value = f"sana:  {d:%d} . {d:%m}"
+
+    n = len(students)
+    last = 6 + max(n, 1)         # oxirgi talaba qatori
+    legend = last + 1
+    stop = max(28, legend)
+
+    mid = {c: copy(ws.cell(7, c)._style) for c in range(1, 25)}
+    end = {c: copy(ws.cell(27, c)._style) for c in range(1, 25)}
+    blank = {c: copy(ws.cell(28, c)._style) for c in range(1, 25)}
+
+    for r in range(7, stop + 1):
+        style = mid if r < last else end if r == last else blank
+        for c in range(1, 25):
+            cell = ws.cell(r, c)
+            cell.value = None
+            cell._style = copy(style[c])
+        ws.row_dimensions[r].height = 26.1 if r <= last else (20 if r == legend else 15)
+
+    for idx, s in enumerate(students):
+        r = 7 + idx
+        ws.cell(r, 1).value = idx + 1
+        ws.cell(r, 2).value = s["full_name"]
+        missed = 0
+        for di, d in enumerate(days):
+            for pair in range(1, 5):
+                lid = lesson_ids.get((d, pair))
+                st = att.get((lid, s["id"])) if lid else None
+                if st:
+                    ws.cell(r, DAY_COL0[di] + pair - 1).value = SYMBOL[st]
+                    if st in ("excused", "unexcused"):   # kelmaganlar; Kechikdi hisobga kirmaydi
+                        missed += 1
+        ws.cell(r, 23).value = missed or None
+
+    note = ws.cell(legend, 2)
+    note.value = "Belgilar:   +  Bor     K  Kechikdi     S  Sababli     X  Sababsiz"
+    note.font = Font(name="Arial", size=9, italic=True)
+    note.alignment = Alignment(horizontal="left", vertical="center")
+    ws.print_area = f"A1:X{legend}"
+
+
+def add_summary(wb, rows: list, month: str):
+    ws = wb.create_sheet("Oy jami")
+    head_fill = PatternFill("solid", fgColor="E7E6E6")
+    box = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    ws["A1"] = f"OY JAMI — {month}"
+    ws["A1"].font = Font(name="Arial", size=14, bold=True)
+    ws.merge_cells("A1:H1")
+    ws["A1"].alignment = Alignment(horizontal="center")
+    heads = ["№", "Talaba F.I.Sh.", "Bor", "Kechikdi", "Sababli", "Sababsiz", "Jami", "Davomat %"]
+    for c, h in enumerate(heads, start=1):
+        cell = ws.cell(3, c, h)
+        cell.font = Font(name="Arial", size=11, bold=True)
+        cell.fill, cell.border = head_fill, box
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for i, r in enumerate(rows, start=1):
+        total = r["present"] + r["late"] + r["excused"] + r["unexcused"]
+        vals = [i, r["full_name"], r["present"], r["late"], r["excused"], r["unexcused"],
+                total, r["percent"] if r["percent"] is not None else ""]
+        for c, v in enumerate(vals, start=1):
+            cell = ws.cell(3 + i, c, v)
+            cell.font = Font(name="Arial", size=11)
+            cell.border = box
+            cell.alignment = Alignment(horizontal="left" if c == 2 else "center", vertical="center")
+        ws.row_dimensions[3 + i].height = 22
+    for col, w in zip("ABCDEFGH", [5, 42, 8, 8, 10, 10, 8, 12]):
+        ws.column_dimensions[col].width = w
+    ws.row_dimensions[3].height = 24
+    ws.freeze_panes = "C4"
+    ws.page_setup.orientation = "portrait"
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+
+
+def build_month_workbook(students, mondays, lesson_ids, att, stats_rows, month):
+    wb = load_workbook(TEMPLATE)
+    base = wb.active
+    if mondays:
+        sheets = [base] + [wb.copy_worksheet(base) for _ in mondays[1:]]
+        for ws, mon in zip(sheets, mondays):
+            fill_week(ws, mon, students, lesson_ids, att)
+    else:
+        wb.remove(base)
+    add_summary(wb, stats_rows, month)
+    return wb
+
+
+def build_week_workbook(students, monday, lesson_ids, att):
+    wb = load_workbook(TEMPLATE)
+    fill_week(wb.active, monday, students, lesson_ids, att)
+    return wb
+
+
+async def load_span(first: date, until: date):
     pool = app.state.pool
-    lessons = await pool.fetch(
-        "SELECT id, lesson_date, pair_no, subject FROM lessons "
-        "WHERE lesson_date >= $1 AND lesson_date < $2 ORDER BY lesson_date, pair_no",
-        start, end,
+    lrows = await pool.fetch(
+        "SELECT id, lesson_date, pair_no FROM lessons WHERE lesson_date >= $1 AND lesson_date < $2",
+        first, until,
     )
-    students = await pool.fetch(
+    arows = await pool.fetch(
+        "SELECT a.lesson_id, a.student_id, a.status FROM attendance a "
+        "JOIN lessons l ON l.id = a.lesson_id WHERE l.lesson_date >= $1 AND l.lesson_date < $2",
+        first, until,
+    )
+    lesson_ids = {(r["lesson_date"], r["pair_no"]): r["id"] for r in lrows}
+    att = {(r["lesson_id"], r["student_id"]): r["status"] for r in arows}
+    return lesson_ids, att
+
+
+async def active_students():
+    rows = await app.state.pool.fetch(
         "SELECT id, full_name FROM students WHERE active ORDER BY sort_order, full_name"
     )
-    att = await pool.fetch(
-        "SELECT a.lesson_id, a.student_id, a.status FROM attendance a "
-        "JOIN lessons l ON l.id = a.lesson_id "
-        "WHERE l.lesson_date >= $1 AND l.lesson_date < $2",
-        start, end,
-    )
-    cell = {(r["lesson_id"], r["student_id"]): r["status"] for r in att}
+    return [dict(r) for r in rows]
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Davomat"
-    head_fill = PatternFill("solid", fgColor="14212B")
-    head_font = Font(bold=True, color="FFFFFF")
-    fills = {
-        "absent": "F6D5D2", "excused": "F6E7C3", "unexcused": "E6D2EC",
-    }
 
-    ws.append(
-        ["Talaba"]
-        + [f"{l['lesson_date']:%d.%m} ({l['pair_no']}) {l['subject']}" for l in lessons]
-        + ["Bor", "Yo'q", "Sababli", "Sababsiz", "%"]
-    )
-    for c in ws[1]:
-        c.fill, c.font = head_fill, head_font
-        c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
-    ws.row_dimensions[1].height = 60
-
-    for s in students:
-        counts = {k: 0 for k in STATUSES}
-        row = [s["full_name"]]
-        for l in lessons:
-            st = cell.get((l["id"], s["id"]))
-            if st:
-                counts[st] += 1
-            row.append(LABELS.get(st, ""))
-        total = sum(counts.values())
-        pct = round(counts["present"] * 100 / total) if total else ""
-        row += [counts["present"], counts["absent"], counts["excused"], counts["unexcused"], pct]
-        ws.append(row)
-        r = ws.max_row
-        for i, l in enumerate(lessons, start=2):
-            st = cell.get((l["id"], s["id"]))
-            if st in fills:
-                ws.cell(row=r, column=i).fill = PatternFill("solid", fgColor=fills[st])
-            ws.cell(row=r, column=i).alignment = Alignment(horizontal="center")
-
-    ws.column_dimensions["A"].width = 30
-    for i in range(2, len(lessons) + 7):
-        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = 13
-    ws.freeze_panes = "B2"
-
+def xlsx_response(wb, filename: str):
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="davomat-{month}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/export")
+async def export_month(month: str):
+    """Oylik hisobot: har hafta uchun alohida varaq (shablon ko'rinishida) + 'Oy jami'."""
+    start, end = month_range(month)
+    days = await app.state.pool.fetch(
+        "SELECT DISTINCT lesson_date FROM lessons WHERE lesson_date >= $1 AND lesson_date < $2",
+        start, end,
+    )
+    mondays = sorted({
+        r["lesson_date"] - timedelta(days=r["lesson_date"].weekday())
+        for r in days if r["lesson_date"].weekday() < 5
+    })
+    lesson_ids, att = ({}, {})
+    if mondays:
+        lesson_ids, att = await load_span(mondays[0], mondays[-1] + timedelta(days=7))
+    wb = build_month_workbook(
+        await active_students(), mondays, lesson_ids, att, await month_stats(month), month
+    )
+    return xlsx_response(wb, f"davomat-{month}.xlsx")
+
+
+@app.get("/api/export/week")
+async def export_week(day: date):
+    """Haftalik hisobot: berilgan sana qaysi haftaga tushsa, o'sha haftaning varag'i."""
+    monday = day - timedelta(days=day.weekday())
+    lesson_ids, att = await load_span(monday, monday + timedelta(days=7))
+    wb = build_week_workbook(await active_students(), monday, lesson_ids, att)
+    return xlsx_response(wb, f"davomat-{monday:%Y-%m-%d}.xlsx")
 
 
 # ---------- Dars jadvali ----------
@@ -420,6 +534,276 @@ async def update_schedule(item_id: int, body: ScheduleIn):
 @app.delete("/api/schedule/{item_id}", dependencies=[Depends(admin)])
 async def delete_schedule(item_id: int):
     await app.state.pool.execute("DELETE FROM schedule WHERE id=$1", item_id)
+    return {"ok": True}
+
+
+# ---------- Hujjatlar ----------
+GROUP_CODE = os.environ.get("GROUP_CODE", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+BUCKET = os.environ.get("STORAGE_BUCKET", "documents")
+MAX_UPLOAD = 25 * 1024 * 1024   # 25 MB
+
+_fails: dict[str, list[float]] = {}   # guruh kodini taxmin qilishdan himoya (IP bo'yicha)
+
+
+def client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    return xff.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+def member(
+    request: Request,
+    x_group_code: str = Header(default=""),
+    x_admin_token: str = Header(default=""),
+):
+    """Starosta (admin paroli) yoki guruh kodi bilan kirgan talaba."""
+    if x_admin_token and secrets.compare_digest(x_admin_token.encode(), ADMIN_TOKEN.encode()):
+        return "admin"
+    ip, now = client_ip(request), pytime.time()
+    recent = [t for t in _fails.get(ip, []) if now - t < 300]
+    if len(recent) >= 10:
+        raise HTTPException(429, "Juda ko'p urinish. 5 daqiqadan keyin qayta urinib ko'ring")
+    if GROUP_CODE and x_group_code and secrets.compare_digest(x_group_code.encode(), GROUP_CODE.encode()):
+        return "member"
+    _fails[ip] = recent + [now]
+    raise HTTPException(401, "Guruh kodi noto'g'ri")
+
+
+def sb_headers(extra: dict | None = None) -> dict:
+    h = {"apikey": SUPABASE_KEY}
+    if not SUPABASE_KEY.startswith("sb_"):      # eski (JWT) kalit uchun
+        h["Authorization"] = f"Bearer {SUPABASE_KEY}"
+    if extra:
+        h.update(extra)
+    return h
+
+
+def need_storage():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise HTTPException(503, "Fayl saqlash sozlanmagan (SUPABASE_URL va SUPABASE_SERVICE_KEY kerak)")
+
+
+async def ensure_bucket(http: httpx.AsyncClient):
+    """Yopiq (private) bucket yo'q bo'lsa yaratadi; bor bo'lsa jim o'tadi."""
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return
+    try:
+        await http.post(f"{SUPABASE_URL}/storage/v1/bucket", headers=sb_headers(),
+                        json={"id": BUCKET, "name": BUCKET, "public": False})
+    except Exception:
+        pass
+
+
+async def storage_upload(path: str, data: bytes, mime: str):
+    need_storage()
+    r = await app.state.http.post(
+        f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}",
+        headers=sb_headers({"Content-Type": mime}), content=data,
+    )
+    if r.status_code >= 300:
+        raise HTTPException(502, "Faylni saqlashda xatolik yuz berdi")
+
+
+async def storage_sign(path: str, seconds: int = 300) -> str:
+    need_storage()
+    r = await app.state.http.post(
+        f"{SUPABASE_URL}/storage/v1/object/sign/{BUCKET}/{path}",
+        headers=sb_headers(), json={"expiresIn": seconds},
+    )
+    if r.status_code >= 300:
+        raise HTTPException(502, "Fayl havolasini yaratib bo'lmadi")
+    return f"{SUPABASE_URL}/storage/v1{r.json()['signedURL']}"
+
+
+async def storage_delete(path: str):
+    try:
+        await app.state.http.delete(f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}", headers=sb_headers())
+    except Exception:
+        pass
+
+
+async def read_upload(file: UploadFile):
+    data = await file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "Fayl 25 MB dan katta bo'lmasligi kerak")
+    name = os.path.basename(file.filename or "fayl")[:200]
+    ext = re.sub(r"[^a-z0-9]", "", os.path.splitext(name)[1].lower())[:8]
+    path = uuid.uuid4().hex + (f".{ext}" if ext else "")      # saqlash nomi har doim xavfsiz (ASCII)
+    mime = file.content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return data, name, mime, path
+
+
+def clean_tags(items: list[str]) -> list[str]:
+    out: list[str] = []
+    for t in items:
+        t = t.strip().lstrip("#")[:30]
+        if t and t.lower() not in [x.lower() for x in out]:
+            out.append(t)
+    return out[:10]
+
+
+def check_url(url: str) -> str:
+    url = url.strip()
+    if not re.match(r"^https?://\S+$", url):
+        raise HTTPException(400, "Havola http:// yoki https:// bilan boshlanishi kerak")
+    return url[:2000]
+
+
+def to_category(raw: str):
+    return int(raw) if raw.strip().isdigit() else None
+
+
+@app.get("/api/access")
+async def access(role: str = Depends(member)):
+    return {"role": role}
+
+
+# --- kategoriyalar ---
+class CategoryIn(BaseModel):
+    name: str
+
+
+@app.get("/api/categories", dependencies=[Depends(member)])
+async def list_categories():
+    rows = await app.state.pool.fetch("SELECT id, name FROM categories ORDER BY sort_order, name")
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/categories", dependencies=[Depends(admin)])
+async def add_category(body: CategoryIn):
+    name = body.name.strip()[:60]
+    if not name:
+        raise HTTPException(400, "Kategoriya nomini yozing")
+    try:
+        row = await app.state.pool.fetchrow(
+            "INSERT INTO categories (name, sort_order) "
+            "VALUES ($1, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories)) RETURNING id, name",
+            name,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(409, "Bunday kategoriya allaqachon bor")
+    return dict(row)
+
+
+@app.delete("/api/categories/{cid}", dependencies=[Depends(admin)])
+async def delete_category(cid: int):
+    # hujjatlar o'chmaydi, faqat "kategoriyasiz" bo'lib qoladi (FK: ON DELETE SET NULL)
+    await app.state.pool.execute("DELETE FROM categories WHERE id = $1", cid)
+    return {"ok": True}
+
+
+# --- hujjatlar ---
+@app.get("/api/documents", dependencies=[Depends(member)])
+async def list_documents():
+    rows = await app.state.pool.fetch(
+        "SELECT d.id, d.title, d.category_id, c.name AS category, d.tags, d.note, d.kind, "
+        "CASE WHEN d.kind = 'link' THEN d.url END AS url, "
+        "d.file_name, d.mime, d.size, d.pinned, d.created_at "
+        "FROM documents d LEFT JOIN categories c ON c.id = d.category_id "
+        "ORDER BY d.pinned DESC, d.created_at DESC"
+    )
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/documents/{doc_id}/open", dependencies=[Depends(member)])
+async def open_document(doc_id: int):
+    row = await app.state.pool.fetchrow("SELECT kind, url, storage_path FROM documents WHERE id = $1", doc_id)
+    if not row:
+        raise HTTPException(404, "Hujjat topilmadi")
+    if row["kind"] == "link":
+        return {"url": row["url"]}
+    return {"url": await storage_sign(row["storage_path"])}
+
+
+@app.post("/api/documents", dependencies=[Depends(admin)])
+async def create_document(
+    title: str = Form(...),
+    category_id: str = Form(""),
+    tags: str = Form(""),
+    note: str = Form(""),
+    link: str = Form(""),
+    file: UploadFile | None = File(None),
+):
+    title = title.strip()[:200]
+    if not title:
+        raise HTTPException(400, "Hujjat nomini yozing")
+    has_file = file is not None and bool(file.filename)
+    link = link.strip()
+    if has_file == bool(link):
+        raise HTTPException(400, "Fayl yoki havoladan faqat bittasini kiriting")
+
+    kind, url, path, fname, mime, size = "link", None, None, None, None, None
+    if link:
+        url = check_url(link)
+    else:
+        data, fname, mime, path = await read_upload(file)
+        size, kind = len(data), "file"
+        await storage_upload(path, data, mime)
+    try:
+        row = await app.state.pool.fetchrow(
+            "INSERT INTO documents (title, category_id, tags, note, kind, url, storage_path, file_name, mime, size) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+            title, to_category(category_id), clean_tags(tags.split(",")), note.strip()[:1000],
+            kind, url, path, fname, mime, size,
+        )
+    except asyncpg.ForeignKeyViolationError:
+        if path:
+            await storage_delete(path)
+        raise HTTPException(400, "Kategoriya topilmadi")
+    return {"id": row["id"]}
+
+
+class DocUpdate(BaseModel):
+    title: str
+    category_id: int | None = None
+    tags: list[str] = []
+    note: str = ""
+    pinned: bool = False
+    url: str | None = None
+
+
+@app.put("/api/documents/{doc_id}", dependencies=[Depends(admin)])
+async def update_document(doc_id: int, body: DocUpdate):
+    title = body.title.strip()[:200]
+    if not title:
+        raise HTTPException(400, "Hujjat nomini yozing")
+    row = await app.state.pool.fetchrow("SELECT kind, url FROM documents WHERE id = $1", doc_id)
+    if not row:
+        raise HTTPException(404, "Hujjat topilmadi")
+    url = check_url(body.url) if row["kind"] == "link" and body.url else row["url"]
+    try:
+        await app.state.pool.execute(
+            "UPDATE documents SET title=$1, category_id=$2, tags=$3, note=$4, pinned=$5, url=$6 WHERE id=$7",
+            title, body.category_id, clean_tags(body.tags), body.note.strip()[:1000], body.pinned, url, doc_id,
+        )
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(400, "Kategoriya topilmadi")
+    return {"ok": True}
+
+
+@app.post("/api/documents/{doc_id}/file", dependencies=[Depends(admin)])
+async def replace_file(doc_id: int, file: UploadFile = File(...)):
+    row = await app.state.pool.fetchrow("SELECT kind, storage_path FROM documents WHERE id = $1", doc_id)
+    if not row:
+        raise HTTPException(404, "Hujjat topilmadi")
+    if row["kind"] != "file":
+        raise HTTPException(400, "Bu hujjat havola, faylni almashtirib bo'lmaydi")
+    data, fname, mime, path = await read_upload(file)
+    await storage_upload(path, data, mime)
+    await app.state.pool.execute(
+        "UPDATE documents SET storage_path=$1, file_name=$2, mime=$3, size=$4 WHERE id=$5",
+        path, fname, mime, len(data), doc_id,
+    )
+    await storage_delete(row["storage_path"])
+    return {"ok": True}
+
+
+@app.delete("/api/documents/{doc_id}", dependencies=[Depends(admin)])
+async def delete_document(doc_id: int):
+    row = await app.state.pool.fetchrow("DELETE FROM documents WHERE id = $1 RETURNING storage_path", doc_id)
+    if row and row["storage_path"]:
+        await storage_delete(row["storage_path"])
     return {"ok": True}
 
 

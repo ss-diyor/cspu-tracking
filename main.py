@@ -54,11 +54,6 @@ def admin(x_admin_token: str = Header(default="")):
         raise HTTPException(401, "Parol noto'g'ri")
 
 
-def is_admin(x_admin_token: str = Header(default="")) -> bool:
-    """Starosta ekanini tekshiradi, lekin xato bermaydi (ixtiyoriy maydonlarni ko'rsatish uchun)."""
-    return bool(x_admin_token) and secrets.compare_digest(x_admin_token.encode(), ADMIN_TOKEN.encode())
-
-
 def month_range(month: str) -> tuple[date, date]:
     try:
         y, m = map(int, month.split("-"))
@@ -90,7 +85,7 @@ class AttendanceIn(BaseModel):
 
 
 # ---------- Talabalar ----------
-@app.get("/api/students")
+@app.get("/api/students", dependencies=[Depends(admin)])
 async def list_students():
     rows = await app.state.pool.fetch(
         "SELECT id, full_name FROM students WHERE active ORDER BY sort_order, full_name"
@@ -185,8 +180,8 @@ async def delete_lesson(lesson_id: int):
 
 
 # ---------- Davomat ----------
-@app.get("/api/lessons/{lesson_id}/attendance")
-async def get_attendance(lesson_id: int, staff: bool = Depends(is_admin)):
+@app.get("/api/lessons/{lesson_id}/attendance", dependencies=[Depends(admin)])
+async def get_attendance(lesson_id: int):
     rows = await app.state.pool.fetch(
         "SELECT s.id AS student_id, s.full_name, a.status, a.note "
         "FROM students s LEFT JOIN attendance a "
@@ -194,8 +189,7 @@ async def get_attendance(lesson_id: int, staff: bool = Depends(is_admin)):
         "WHERE s.active ORDER BY s.sort_order, s.full_name",
         lesson_id,
     )
-    # sabab (masalan, kasallik) faqat starostaga ko'rinadi
-    return [dict(r) if staff else {k: v for k, v in dict(r).items() if k != "note"} for r in rows]
+    return [dict(r) for r in rows]
 
 
 @app.put("/api/lessons/{lesson_id}/attendance", dependencies=[Depends(admin)])
@@ -253,12 +247,12 @@ async def month_stats(month: str):
     return out
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=[Depends(admin)])
 async def stats(month: str):
     return await month_stats(month)
 
 
-@app.get("/api/stats/trend")
+@app.get("/api/stats/trend", dependencies=[Depends(admin)])
 async def stats_trend(month: str):
     """Oy ichidagi har bir kun uchun jami davomat (grafik uchun)."""
     start, end = month_range(month)
@@ -291,8 +285,8 @@ async def stats_trend(month: str):
     return out
 
 
-@app.get("/api/stats/day")
-async def stats_day(lesson_date: date, staff: bool = Depends(is_admin)):
+@app.get("/api/stats/day", dependencies=[Depends(admin)])
+async def stats_day(lesson_date: date):
     """Bitta kun: har bir dars bo'yicha sonlar va kelmaganlar ro'yxati."""
     pool = app.state.pool
     lessons = await pool.fetch(
@@ -313,7 +307,7 @@ async def stats_day(lesson_date: date, staff: bool = Depends(is_admin)):
                 "total": len(mine),
                 "absentees": [
                     {"full_name": r["full_name"], "status": r["status"],
-                     **({"note": r["note"]} if staff else {})}
+                     "note": r["note"]}
                     for r in mine if r["status"] != "present"]}
         for k in STATUSES:
             item[k] = sum(1 for r in mine if r["status"] == k)
@@ -517,8 +511,8 @@ def xlsx_response(wb, filename: str):
     )
 
 
-@app.get("/api/export")
-async def export_month(month: str, staff: bool = Depends(is_admin)):
+@app.get("/api/export", dependencies=[Depends(admin)])
+async def export_month(month: str):
     """Oylik hisobot: har hafta uchun alohida varaq (shablon ko'rinishida) + 'Oy jami'."""
     start, end = month_range(month)
     days = await app.state.pool.fetch(
@@ -532,25 +526,98 @@ async def export_month(month: str, staff: bool = Depends(is_admin)):
     lesson_ids, att = ({}, {})
     if mondays:
         lesson_ids, att = await load_span(mondays[0], mondays[-1] + timedelta(days=7))
-    notes = None        # izohlar faqat starostaga (parol bilan yuklaganda) chiqadi
-    if staff:
-        first = min(start, mondays[0]) if mondays else start
-        until = max(end, mondays[-1] + timedelta(days=7)) if mondays else end
-        notes = await load_notes(first, until)
+    first = min(start, mondays[0]) if mondays else start
+    until = max(end, mondays[-1] + timedelta(days=7)) if mondays else end
+    notes = await load_notes(first, until)
     wb = build_month_workbook(
         await active_students(), mondays, lesson_ids, att, await month_stats(month), month, notes
     )
     return xlsx_response(wb, f"davomat-{month}.xlsx")
 
 
-@app.get("/api/export/week")
-async def export_week(day: date, staff: bool = Depends(is_admin)):
+@app.get("/api/export/week", dependencies=[Depends(admin)])
+async def export_week(day: date):
     """Haftalik hisobot: berilgan sana qaysi haftaga tushsa, o'sha haftaning varag'i."""
     monday = day - timedelta(days=day.weekday())
     lesson_ids, att = await load_span(monday, monday + timedelta(days=7))
-    notes = await load_notes(monday, monday + timedelta(days=7)) if staff else None
+    notes = await load_notes(monday, monday + timedelta(days=7))
     wb = build_week_workbook(await active_students(), monday, lesson_ids, att, notes)
     return xlsx_response(wb, f"davomat-{monday:%Y-%m-%d}.xlsx")
+
+
+# ---------- Talaba profili (shaxsiy kod bilan) ----------
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # O/0 va I/1 kabi adashtiriladigan belgilarsiz
+RISK_LIMIT = int(os.environ.get("RISK_LIMIT", "75"))  # profilda ogohlantirish chegarasi (%)
+_code_fails: dict[str, list[float]] = {}               # kodni taxmin qilishdan himoya (IP bo'yicha)
+
+
+async def assign_code(student_id: int) -> str:
+    for _ in range(20):
+        code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(6))
+        try:
+            await app.state.pool.execute(
+                "UPDATE students SET access_code = $1 WHERE id = $2", code, student_id
+            )
+            return code
+        except asyncpg.UniqueViolationError:
+            continue
+    raise HTTPException(500, "Kod yaratib bo'lmadi, qayta urinib ko'ring")
+
+
+@app.get("/api/students/codes", dependencies=[Depends(admin)])
+async def student_codes():
+    """Talabalar ro'yxati shaxsiy kodlari bilan (kodi yo'qlarga shu yerda yaratib beriladi)."""
+    rows = await app.state.pool.fetch(
+        "SELECT id, full_name, access_code FROM students WHERE active ORDER BY sort_order, full_name"
+    )
+    out = []
+    for r in rows:
+        code = r["access_code"] or await assign_code(r["id"])
+        out.append({"id": r["id"], "full_name": r["full_name"], "code": code})
+    return out
+
+
+@app.post("/api/students/{student_id}/code", dependencies=[Depends(admin)])
+async def new_student_code(student_id: int):
+    found = await app.state.pool.fetchval(
+        "SELECT 1 FROM students WHERE id = $1 AND active", student_id
+    )
+    if not found:
+        raise HTTPException(404, "Talaba topilmadi")
+    return {"code": await assign_code(student_id)}
+
+
+@app.get("/api/me")
+async def my_profile(request: Request, x_student_code: str = Header(default="")):
+    """Talaba faqat o'z davomatini ko'radi (shaxsiy kod X-Student-Code sarlavhasida)."""
+    code = x_student_code.strip().upper()
+    if not code:
+        raise HTTPException(401, "Shaxsiy kodni kiriting")
+    ip, now = client_ip(request), pytime.time()
+    recent = [t for t in _code_fails.get(ip, []) if now - t < 300]
+    if len(recent) >= 10:
+        raise HTTPException(429, "Juda ko'p urinish. 5 daqiqadan keyin qayta urinib ko'ring")
+    student = await app.state.pool.fetchrow(
+        "SELECT id, full_name FROM students WHERE active AND access_code = $1", code
+    )
+    if not student:
+        _code_fails[ip] = recent + [now]
+        raise HTTPException(401, "Shaxsiy kod noto'g'ri")
+    rows = await app.state.pool.fetch(
+        "SELECT l.lesson_date, l.pair_no, l.subject, a.status, a.note "
+        "FROM attendance a JOIN lessons l ON l.id = a.lesson_id "
+        "WHERE a.student_id = $1 ORDER BY l.lesson_date DESC, l.pair_no",
+        student["id"],
+    )
+    return {
+        "name": student["full_name"],
+        "risk_limit": RISK_LIMIT,
+        "records": [
+            {"date": r["lesson_date"].isoformat(), "pair_no": r["pair_no"], "subject": r["subject"],
+             "status": r["status"], "note": r["note"]}
+            for r in rows
+        ],
+    }
 
 
 # ---------- Dars jadvali ----------

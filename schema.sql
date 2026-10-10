@@ -67,3 +67,7 @@ ALTER TABLE documents  ENABLE ROW LEVEL SECURITY;
 
 -- Sababli kelmaganlik uchun sabab (faqat starosta ko'radi)
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
+
+-- Talabaning shaxsiy profili uchun kod
+ALTER TABLE students ADD COLUMN IF NOT EXISTS access_code TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_students_access_code ON students (access_code) WHERE access_code IS NOT NULL;

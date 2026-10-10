@@ -78,7 +78,6 @@ class Record(BaseModel):
     student_id: int
     status: str
     note: str = ""              # faqat "Sababli" uchun: sabab (masalan, kasal)
-    doc_id: int | None = None   # faqat "Sababli" uchun: biriktirilgan hujjat (ma'lumotnoma)
 
 
 class AttendanceIn(BaseModel):
@@ -184,15 +183,14 @@ async def delete_lesson(lesson_id: int):
 @app.get("/api/lessons/{lesson_id}/attendance")
 async def get_attendance(lesson_id: int, staff: bool = Depends(is_admin)):
     rows = await app.state.pool.fetch(
-        "SELECT s.id AS student_id, s.full_name, a.status, a.note, a.doc_id, d.title AS doc_title "
+        "SELECT s.id AS student_id, s.full_name, a.status, a.note "
         "FROM students s LEFT JOIN attendance a "
         "ON a.student_id = s.id AND a.lesson_id = $1 "
-        "LEFT JOIN documents d ON d.id = a.doc_id "
         "WHERE s.active ORDER BY s.sort_order, s.full_name",
         lesson_id,
     )
-    private = ("note", "doc_id", "doc_title")      # sabab va hujjat faqat starostaga ko'rinadi
-    return [dict(r) if staff else {k: v for k, v in dict(r).items() if k not in private} for r in rows]
+    # sabab (masalan, kasallik) faqat starostaga ko'rinadi
+    return [dict(r) if staff else {k: v for k, v in dict(r).items() if k != "note"} for r in rows]
 
 
 @app.put("/api/lessons/{lesson_id}/attendance", dependencies=[Depends(admin)])
@@ -202,20 +200,20 @@ async def save_attendance(lesson_id: int, body: AttendanceIn):
             raise HTTPException(400, f"Noto'g'ri status: {r.status}")
     rows = []
     for r in body.records:
-        ex = r.status == "excused"      # sabab va hujjat faqat "Sababli" bo'lsa saqlanadi
-        rows.append((lesson_id, r.student_id, r.status, r.note.strip()[:300] if ex else "", r.doc_id if ex else None))
+        ex = r.status == "excused"      # sabab faqat "Sababli" bo'lsa saqlanadi
+        rows.append((lesson_id, r.student_id, r.status, r.note.strip()[:300] if ex else ""))
     try:
         async with app.state.pool.acquire() as con:
             async with con.transaction():
                 await con.executemany(
-                    "INSERT INTO attendance (lesson_id, student_id, status, note, doc_id) "
-                    "VALUES ($1, $2, $3, $4, $5) "
+                    "INSERT INTO attendance (lesson_id, student_id, status, note) "
+                    "VALUES ($1, $2, $3, $4) "
                     "ON CONFLICT (lesson_id, student_id) DO UPDATE SET "
-                    "status = EXCLUDED.status, note = EXCLUDED.note, doc_id = EXCLUDED.doc_id",
+                    "status = EXCLUDED.status, note = EXCLUDED.note",
                     rows,
                 )
     except asyncpg.ForeignKeyViolationError:
-        raise HTTPException(400, "Biriktirilgan hujjat yoki talaba topilmadi")
+        raise HTTPException(400, "Talaba topilmadi")
     return {"saved": len(body.records)}
 
 
@@ -298,9 +296,8 @@ async def stats_day(lesson_date: date, staff: bool = Depends(is_admin)):
     )
     ids = [l["id"] for l in lessons]
     recs = await pool.fetch(
-        "SELECT a.lesson_id, a.status, a.note, a.doc_id, d.title AS doc_title, s.full_name "
+        "SELECT a.lesson_id, a.status, a.note, s.full_name "
         "FROM attendance a JOIN students s ON s.id = a.student_id AND s.active "
-        "LEFT JOIN documents d ON d.id = a.doc_id "
         "WHERE a.lesson_id = ANY($1::int[]) ORDER BY s.sort_order, s.full_name",
         ids,
     )
@@ -311,7 +308,7 @@ async def stats_day(lesson_date: date, staff: bool = Depends(is_admin)):
                 "total": len(mine),
                 "absentees": [
                     {"full_name": r["full_name"], "status": r["status"],
-                     **({"note": r["note"], "doc_id": r["doc_id"], "doc_title": r["doc_title"]} if staff else {})}
+                     **({"note": r["note"]} if staff else {})}
                     for r in mine if r["status"] != "present"]}
         for k in STATUSES:
             item[k] = sum(1 for r in mine if r["status"] == k)
@@ -330,9 +327,19 @@ TEMPLATE_ROWS = 21              # shablondagi talabalar qatorlari (7..27)
 THIN = Side(style="thin")
 
 
-def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict):
+def note_text(entries: list) -> str:
+    """[(sana, izoh), ...] -> '05.10 kasal; 07.10 oilaviy' (bir kunda bir xil izoh bir marta)."""
+    by_day: dict = {}
+    for d, n in entries:
+        if n not in by_day.setdefault(d, []):
+            by_day[d].append(n)
+    return "; ".join(f"{d:%d.%m} {', '.join(ns)}" for d, ns in sorted(by_day.items()))
+
+
+def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict, notes: list | None = None):
     """Bitta haftalik varaqni to'ldiradi.
-    lesson_ids: {(sana, juftlik): dars_id}, att: {(dars_id, talaba_id): status}"""
+    lesson_ids: {(sana, juftlik): dars_id}, att: {(dars_id, talaba_id): status}
+    notes: [(talaba_id, sana, izoh)] — "Sababli" izohlari; None bo'lsa (starosta emas) chiqarilmaydi"""
     days = [monday + timedelta(days=i) for i in range(5)]
     friday = days[-1]
     ws.title = f"{monday:%d.%m}-{friday:%d.%m}"
@@ -340,6 +347,11 @@ def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict):
                 f"{friday:%d} . {friday:%m} . {friday:%Y}  gacha")
     for i, d in enumerate(days):
         ws.cell(5, DAY_COL0[i]).value = f"sana:  {d:%d} . {d:%m}"
+
+    week_notes: dict = {}
+    for sid, d, text in notes or []:
+        if days[0] <= d <= days[-1]:
+            week_notes.setdefault(sid, []).append((d, text))
 
     n = len(students)
     last = 6 + max(n, 1)         # oxirgi talaba qatori
@@ -372,6 +384,13 @@ def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict):
                     if st in ("excused", "unexcused"):   # kelmaganlar; Kechikdi hisobga kirmaydi
                         missed += 1
         ws.cell(r, 23).value = missed or None
+        text = note_text(week_notes.get(s["id"], []))
+        if text:                 # "Izoh" ustuni
+            cell = ws.cell(r, 24)
+            cell.value = text
+            cell.font = Font(name=cell.font.name or "Arial", size=8)
+            cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="left")
+            ws.row_dimensions[r].height = max(26.1, 10.5 * -(-len(text) // 17) + 4)
 
     note = ws.cell(legend, 2)
     note.value = "Belgilar:   +  Bor     K  Kechikdi     S  Sababli     X  Sababsiz"
@@ -380,15 +399,20 @@ def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict):
     ws.print_area = f"A1:X{legend}"
 
 
-def add_summary(wb, rows: list, month: str):
+def add_summary(wb, rows: list, month: str, notes: list | None = None):
     ws = wb.create_sheet("Oy jami")
     head_fill = PatternFill("solid", fgColor="E7E6E6")
     box = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
     ws["A1"] = f"OY JAMI — {month}"
     ws["A1"].font = Font(name="Arial", size=14, bold=True)
-    ws.merge_cells("A1:H1")
+    ws.merge_cells("A1:I1" if notes is not None else "A1:H1")
     ws["A1"].alignment = Alignment(horizontal="center")
     heads = ["№", "Talaba F.I.Sh.", "Bor", "Kechikdi", "Sababli", "Sababsiz", "Jami", "Davomat %"]
+    if notes is not None:
+        heads.append("Sababli izohlari")
+    by_student: dict = {}
+    for sid, d, text in notes or []:
+        by_student.setdefault(sid, []).append((d, text))
     for c, h in enumerate(heads, start=1):
         cell = ws.cell(3, c, h)
         cell.font = Font(name="Arial", size=11, bold=True)
@@ -404,7 +428,15 @@ def add_summary(wb, rows: list, month: str):
             cell.border = box
             cell.alignment = Alignment(horizontal="left" if c == 2 else "center", vertical="center")
         ws.row_dimensions[3 + i].height = 22
-    for col, w in zip("ABCDEFGH", [5, 42, 8, 8, 10, 10, 8, 12]):
+        if notes is not None:
+            text = note_text(by_student.get(r["id"], []))
+            cell = ws.cell(3 + i, 9, text)
+            cell.font = Font(name="Arial", size=10)
+            cell.border = box
+            cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="left")
+            if text:
+                ws.row_dimensions[3 + i].height = max(22, 13.5 * -(-len(text) // 46) + 4)
+    for col, w in zip("ABCDEFGHI", [5, 42, 8, 8, 10, 10, 8, 12, 48]):
         ws.column_dimensions[col].width = w
     ws.row_dimensions[3].height = 24
     ws.freeze_panes = "C4"
@@ -413,22 +445,24 @@ def add_summary(wb, rows: list, month: str):
     ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
 
 
-def build_month_workbook(students, mondays, lesson_ids, att, stats_rows, month):
+def build_month_workbook(students, mondays, lesson_ids, att, stats_rows, month, notes=None):
     wb = load_workbook(TEMPLATE)
     base = wb.active
     if mondays:
         sheets = [base] + [wb.copy_worksheet(base) for _ in mondays[1:]]
         for ws, mon in zip(sheets, mondays):
-            fill_week(ws, mon, students, lesson_ids, att)
+            fill_week(ws, mon, students, lesson_ids, att, notes)
     else:
         wb.remove(base)
-    add_summary(wb, stats_rows, month)
+    start, end = month_range(month)
+    add_summary(wb, stats_rows, month,
+                None if notes is None else [e for e in notes if start <= e[1] < end])
     return wb
 
 
-def build_week_workbook(students, monday, lesson_ids, att):
+def build_week_workbook(students, monday, lesson_ids, att, notes=None):
     wb = load_workbook(TEMPLATE)
-    fill_week(wb.active, monday, students, lesson_ids, att)
+    fill_week(wb.active, monday, students, lesson_ids, att, notes)
     return wb
 
 
@@ -446,6 +480,18 @@ async def load_span(first: date, until: date):
     lesson_ids = {(r["lesson_date"], r["pair_no"]): r["id"] for r in lrows}
     att = {(r["lesson_id"], r["student_id"]): r["status"] for r in arows}
     return lesson_ids, att
+
+
+async def load_notes(first: date, until: date) -> list:
+    """"Sababli" izohlari: [(talaba_id, sana, izoh)]."""
+    rows = await app.state.pool.fetch(
+        "SELECT a.student_id, l.lesson_date, a.note FROM attendance a "
+        "JOIN lessons l ON l.id = a.lesson_id "
+        "WHERE a.status = 'excused' AND a.note <> '' AND l.lesson_date >= $1 AND l.lesson_date < $2 "
+        "ORDER BY l.lesson_date, l.pair_no",
+        first, until,
+    )
+    return [(r["student_id"], r["lesson_date"], r["note"]) for r in rows]
 
 
 async def active_students():
@@ -467,7 +513,7 @@ def xlsx_response(wb, filename: str):
 
 
 @app.get("/api/export")
-async def export_month(month: str):
+async def export_month(month: str, staff: bool = Depends(is_admin)):
     """Oylik hisobot: har hafta uchun alohida varaq (shablon ko'rinishida) + 'Oy jami'."""
     start, end = month_range(month)
     days = await app.state.pool.fetch(
@@ -481,18 +527,24 @@ async def export_month(month: str):
     lesson_ids, att = ({}, {})
     if mondays:
         lesson_ids, att = await load_span(mondays[0], mondays[-1] + timedelta(days=7))
+    notes = None        # izohlar faqat starostaga (parol bilan yuklaganda) chiqadi
+    if staff:
+        first = min(start, mondays[0]) if mondays else start
+        until = max(end, mondays[-1] + timedelta(days=7)) if mondays else end
+        notes = await load_notes(first, until)
     wb = build_month_workbook(
-        await active_students(), mondays, lesson_ids, att, await month_stats(month), month
+        await active_students(), mondays, lesson_ids, att, await month_stats(month), month, notes
     )
     return xlsx_response(wb, f"davomat-{month}.xlsx")
 
 
 @app.get("/api/export/week")
-async def export_week(day: date):
+async def export_week(day: date, staff: bool = Depends(is_admin)):
     """Haftalik hisobot: berilgan sana qaysi haftaga tushsa, o'sha haftaning varag'i."""
     monday = day - timedelta(days=day.weekday())
     lesson_ids, att = await load_span(monday, monday + timedelta(days=7))
-    wb = build_week_workbook(await active_students(), monday, lesson_ids, att)
+    notes = await load_notes(monday, monday + timedelta(days=7)) if staff else None
+    wb = build_week_workbook(await active_students(), monday, lesson_ids, att, notes)
     return xlsx_response(wb, f"davomat-{monday:%Y-%m-%d}.xlsx")
 
 

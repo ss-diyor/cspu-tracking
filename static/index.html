@@ -103,6 +103,19 @@
   .tile b { display: block; font-size: 1.2rem; }
   .warn { margin-top: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--unexcused); color: var(--unexcused); font-size: .92rem; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; }
+  .chart-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .chart-head #chartMode { flex: 1; margin-bottom: 0 !important; }
+  #chartFullscreen { flex: 0 0 auto; white-space: nowrap; }
+  #chartCard:fullscreen {
+    width: 100vw; height: 100vh; max-width: none; margin: 0; border-radius: 0;
+    padding: 20px; display: flex; flex-direction: column;
+  }
+  #chartCard:fullscreen #chart { flex: 1; min-height: 0; display: flex; align-items: center; }
+  #chartCard:fullscreen #chart svg { max-height: 100%; }
+  @media (max-width: 480px) {
+    #chartCard:fullscreen { padding: 12px; }
+    #chartFullscreen { font-size: .85rem; padding: 9px 8px; }
+  }
 </style>
 </head>
 <body>
@@ -167,10 +180,13 @@
         </div>
         <div id="riskList"></div>
       </div>
-      <div class="card">
-        <div class="row" id="chartMode" style="margin-bottom:6px">
-          <button data-c="line" class="on">Chiziq</button>
-          <button data-c="bar">Ustun</button>
+      <div class="card" id="chartCard">
+        <div class="chart-head">
+          <div class="row" id="chartMode">
+            <button data-c="line" class="on">Chiziq</button>
+            <button data-c="bar">Ustun</button>
+          </div>
+          <button id="chartFullscreen" class="sm" type="button" aria-label="Grafikni to‘liq ekranga chiqarish">To‘liq ekran</button>
         </div>
         <div id="chart"></div>
         <div class="legend" id="legend"></div>
@@ -606,6 +622,26 @@ $("#chartMode").onclick = e => {
   document.querySelectorAll("#chartMode button").forEach(x => x.classList.toggle("on", x === b));
   drawChart();
 };
+
+const chartCard = $("#chartCard");
+const chartFullscreen = $("#chartFullscreen");
+function updateChartFullscreenButton() {
+  const active = document.fullscreenElement === chartCard;
+  chartFullscreen.textContent = active ? "To‘liq ekrandan chiqish" : "To‘liq ekran";
+  chartFullscreen.setAttribute("aria-label", active ? "To‘liq ekrandan chiqish" : "Grafikni to‘liq ekranga chiqarish");
+}
+chartFullscreen.onclick = async () => {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await chartCard.requestFullscreen();
+  } catch (e) {
+    toast("To‘liq ekran rejimi mavjud emas");
+  }
+};
+document.addEventListener("fullscreenchange", () => {
+  updateChartFullscreenButton();
+  if (trend.length) requestAnimationFrame(drawChart);
+});
 
 // Kunlik statistika
 async function loadDay() {

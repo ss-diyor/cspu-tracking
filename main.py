@@ -1,4 +1,5 @@
 import io
+import logging
 import mimetypes
 import os
 import re
@@ -19,6 +20,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.properties import PageSetupProperties
 from pydantic import BaseModel
 
+log = logging.getLogger("uvicorn.error")     # Render loglarida ko'rinadi
 DATABASE_URL = os.environ["DATABASE_URL"]
 ADMIN_TOKEN = os.environ["ADMIN_TOKEN"]
 
@@ -657,41 +659,78 @@ def need_storage():
         raise HTTPException(503, "Fayl saqlash sozlanmagan (SUPABASE_URL va SUPABASE_SERVICE_KEY kerak)")
 
 
-async def ensure_bucket(http: httpx.AsyncClient):
+def sb_error(r: httpx.Response) -> str:
+    """Supabase javobidan o'qiladigan xatolik matni (kalitni o'z ichiga olmaydi)."""
+    try:
+        j = r.json()
+        msg = j.get("message") or j.get("error") or str(j)
+    except Exception:
+        msg = (r.text or "")[:200]
+    return f"{r.status_code}: {msg}"
+
+
+async def sb_call(method: str, path: str, **kw) -> httpx.Response:
+    """Supabase Storage so'rovi. Yangi (sb_) kalit bilan avval faqat apikey yuboriladi;
+    rad etilsa, Authorization: Bearer bilan ham bir marta sinab ko'riladi."""
+    need_storage()
+    url = f"{SUPABASE_URL}/storage/v1/{path}"
+    extra = kw.pop("headers", {})
+    variants = [sb_headers(extra)]
+    if SUPABASE_KEY.startswith("sb_"):
+        variants.append({**sb_headers(extra), "Authorization": f"Bearer {SUPABASE_KEY}"})
+    r = None
+    for h in variants:
+        try:
+            r = await app.state.http.request(method, url, headers=h, **kw)
+        except httpx.HTTPError as e:
+            log.error("Supabase bilan aloqa xatosi: %s", type(e).__name__)
+            raise HTTPException(502, "Supabase bilan bog'lanib bo'lmadi. SUPABASE_URL to'g'riligini tekshiring "
+                                     "(faqat https://xxxx.supabase.co ko'rinishida bo'lsin)")
+        if r.status_code not in (401, 403) and not (r.status_code == 400 and "jw" in r.text.lower()):
+            return r
+    return r
+
+
+async def ensure_bucket(http: httpx.AsyncClient | None = None):
     """Yopiq (private) bucket yo'q bo'lsa yaratadi; bor bo'lsa jim o'tadi."""
     if not (SUPABASE_URL and SUPABASE_KEY):
         return
     try:
-        await http.post(f"{SUPABASE_URL}/storage/v1/bucket", headers=sb_headers(),
-                        json={"id": BUCKET, "name": BUCKET, "public": False})
-    except Exception:
-        pass
+        r = await sb_call("POST", "bucket", json={"id": BUCKET, "name": BUCKET, "public": False})
+        if r.status_code < 300:
+            log.info("Supabase bucket '%s' yaratildi", BUCKET)
+        elif r.status_code == 409 or "already exists" in r.text.lower():
+            log.info("Supabase bucket '%s' mavjud", BUCKET)
+        else:
+            log.warning("Supabase bucket '%s' yaratilmadi: %s", BUCKET, sb_error(r))
+    except Exception as e:
+        log.warning("Supabase bucket tekshirib bo'lmadi: %s", e)
 
 
 async def storage_upload(path: str, data: bytes, mime: str):
-    need_storage()
-    r = await app.state.http.post(
-        f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}",
-        headers=sb_headers({"Content-Type": mime}), content=data,
-    )
-    if r.status_code >= 300:
-        raise HTTPException(502, "Faylni saqlashda xatolik yuz berdi")
+    for attempt in (1, 2):
+        r = await sb_call("POST", f"object/{BUCKET}/{path}", headers={"Content-Type": mime}, content=data)
+        if r.status_code < 300:
+            return
+        if attempt == 1 and "bucket" in r.text.lower() and "not found" in r.text.lower():
+            await ensure_bucket()       # bucket o'chirilgan yoki hali yaratilmagan bo'lsa, yaratib qayta urinamiz
+            continue
+        break
+    log.error("Supabase faylni saqlamadi: %s", sb_error(r))
+    raise HTTPException(502, f"Supabase javobi — {sb_error(r)}")
 
 
 async def storage_sign(path: str, seconds: int = 300) -> str:
-    need_storage()
-    r = await app.state.http.post(
-        f"{SUPABASE_URL}/storage/v1/object/sign/{BUCKET}/{path}",
-        headers=sb_headers(), json={"expiresIn": seconds},
-    )
+    r = await sb_call("POST", f"object/sign/{BUCKET}/{path}", json={"expiresIn": seconds})
     if r.status_code >= 300:
-        raise HTTPException(502, "Fayl havolasini yaratib bo'lmadi")
+        log.error("Supabase havola yaratmadi: %s", sb_error(r))
+        raise HTTPException(502, f"Fayl havolasini yaratib bo'lmadi — {sb_error(r)}")
     return f"{SUPABASE_URL}/storage/v1{r.json()['signedURL']}"
 
 
 async def storage_delete(path: str):
     try:
-        await app.state.http.delete(f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}", headers=sb_headers())
+        await sb_call("DELETE", f"object/{BUCKET}/{path}")
     except Exception:
         pass
 

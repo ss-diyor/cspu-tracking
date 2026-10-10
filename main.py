@@ -49,6 +49,11 @@ def admin(x_admin_token: str = Header(default="")):
         raise HTTPException(401, "Parol noto'g'ri")
 
 
+def is_admin(x_admin_token: str = Header(default="")) -> bool:
+    """Starosta ekanini tekshiradi, lekin xato bermaydi (ixtiyoriy maydonlarni ko'rsatish uchun)."""
+    return bool(x_admin_token) and secrets.compare_digest(x_admin_token.encode(), ADMIN_TOKEN.encode())
+
+
 def month_range(month: str) -> tuple[date, date]:
     try:
         y, m = map(int, month.split("-"))
@@ -72,6 +77,8 @@ class LessonIn(BaseModel):
 class Record(BaseModel):
     student_id: int
     status: str
+    note: str = ""              # faqat "Sababli" uchun: sabab (masalan, kasal)
+    doc_id: int | None = None   # faqat "Sababli" uchun: biriktirilgan hujjat (ma'lumotnoma)
 
 
 class AttendanceIn(BaseModel):
@@ -175,15 +182,17 @@ async def delete_lesson(lesson_id: int):
 
 # ---------- Davomat ----------
 @app.get("/api/lessons/{lesson_id}/attendance")
-async def get_attendance(lesson_id: int):
+async def get_attendance(lesson_id: int, staff: bool = Depends(is_admin)):
     rows = await app.state.pool.fetch(
-        "SELECT s.id AS student_id, s.full_name, a.status "
+        "SELECT s.id AS student_id, s.full_name, a.status, a.note, a.doc_id, d.title AS doc_title "
         "FROM students s LEFT JOIN attendance a "
         "ON a.student_id = s.id AND a.lesson_id = $1 "
+        "LEFT JOIN documents d ON d.id = a.doc_id "
         "WHERE s.active ORDER BY s.sort_order, s.full_name",
         lesson_id,
     )
-    return [dict(r) for r in rows]
+    private = ("note", "doc_id", "doc_title")      # sabab va hujjat faqat starostaga ko'rinadi
+    return [dict(r) if staff else {k: v for k, v in dict(r).items() if k not in private} for r in rows]
 
 
 @app.put("/api/lessons/{lesson_id}/attendance", dependencies=[Depends(admin)])
@@ -191,13 +200,22 @@ async def save_attendance(lesson_id: int, body: AttendanceIn):
     for r in body.records:
         if r.status not in STATUSES:
             raise HTTPException(400, f"Noto'g'ri status: {r.status}")
-    async with app.state.pool.acquire() as con:
-        async with con.transaction():
-            await con.executemany(
-                "INSERT INTO attendance (lesson_id, student_id, status) VALUES ($1, $2, $3) "
-                "ON CONFLICT (lesson_id, student_id) DO UPDATE SET status = EXCLUDED.status",
-                [(lesson_id, r.student_id, r.status) for r in body.records],
-            )
+    rows = []
+    for r in body.records:
+        ex = r.status == "excused"      # sabab va hujjat faqat "Sababli" bo'lsa saqlanadi
+        rows.append((lesson_id, r.student_id, r.status, r.note.strip()[:300] if ex else "", r.doc_id if ex else None))
+    try:
+        async with app.state.pool.acquire() as con:
+            async with con.transaction():
+                await con.executemany(
+                    "INSERT INTO attendance (lesson_id, student_id, status, note, doc_id) "
+                    "VALUES ($1, $2, $3, $4, $5) "
+                    "ON CONFLICT (lesson_id, student_id) DO UPDATE SET "
+                    "status = EXCLUDED.status, note = EXCLUDED.note, doc_id = EXCLUDED.doc_id",
+                    rows,
+                )
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(400, "Biriktirilgan hujjat yoki talaba topilmadi")
     return {"saved": len(body.records)}
 
 
@@ -271,7 +289,7 @@ async def stats_trend(month: str):
 
 
 @app.get("/api/stats/day")
-async def stats_day(lesson_date: date):
+async def stats_day(lesson_date: date, staff: bool = Depends(is_admin)):
     """Bitta kun: har bir dars bo'yicha sonlar va kelmaganlar ro'yxati."""
     pool = app.state.pool
     lessons = await pool.fetch(
@@ -280,8 +298,9 @@ async def stats_day(lesson_date: date):
     )
     ids = [l["id"] for l in lessons]
     recs = await pool.fetch(
-        "SELECT a.lesson_id, a.status, s.full_name "
+        "SELECT a.lesson_id, a.status, a.note, a.doc_id, d.title AS doc_title, s.full_name "
         "FROM attendance a JOIN students s ON s.id = a.student_id AND s.active "
+        "LEFT JOIN documents d ON d.id = a.doc_id "
         "WHERE a.lesson_id = ANY($1::int[]) ORDER BY s.sort_order, s.full_name",
         ids,
     )
@@ -290,8 +309,10 @@ async def stats_day(lesson_date: date):
         mine = [r for r in recs if r["lesson_id"] == l["id"]]
         item = {"id": l["id"], "pair_no": l["pair_no"], "subject": l["subject"],
                 "total": len(mine),
-                "absentees": [{"full_name": r["full_name"], "status": r["status"]}
-                              for r in mine if r["status"] != "present"]}
+                "absentees": [
+                    {"full_name": r["full_name"], "status": r["status"],
+                     **({"note": r["note"], "doc_id": r["doc_id"], "doc_title": r["doc_title"]} if staff else {})}
+                    for r in mine if r["status"] != "present"]}
         for k in STATUSES:
             item[k] = sum(1 for r in mine if r["status"] == k)
         out.append(item)

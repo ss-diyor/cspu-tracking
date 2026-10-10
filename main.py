@@ -6,6 +6,7 @@ import re
 import secrets
 import time as pytime
 import uuid
+from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 from copy import copy
 from datetime import date, time, timedelta
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
         DATABASE_URL, min_size=1, max_size=5, statement_cache_size=0
     )
     app.state.http = httpx.AsyncClient(timeout=60)
+    if SUPABASE_URL:
+        log.info("Supabase Storage manzili: %s", SUPABASE_URL)
     await ensure_bucket(app.state.http)
     yield
     await app.state.http.aclose()
@@ -614,9 +617,20 @@ async def delete_schedule(item_id: int):
 
 # ---------- Hujjatlar ----------
 GROUP_CODE = os.environ.get("GROUP_CODE", "")
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-BUCKET = os.environ.get("STORAGE_BUCKET", "documents")
+def clean_supabase_url(raw: str) -> str:
+    """Faqat https://xxxx.supabase.co qismini qoldiradi: oxiridagi /rest/v1, / va qo'shtirnoqlar olib tashlanadi."""
+    raw = raw.strip().strip("\"'").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "https://" + raw
+    u = urlsplit(raw)
+    return f"{u.scheme}://{u.netloc}"
+
+
+SUPABASE_URL = clean_supabase_url(os.environ.get("SUPABASE_URL", ""))
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip().strip("\"'").strip()
+BUCKET = os.environ.get("STORAGE_BUCKET", "").strip() or "documents"
 MAX_UPLOAD = 25 * 1024 * 1024   # 25 MB
 
 _fails: dict[str, list[float]] = {}   # guruh kodini taxmin qilishdan himoya (IP bo'yicha)

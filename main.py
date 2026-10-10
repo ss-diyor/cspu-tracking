@@ -50,14 +50,12 @@ def _allow(bucket: dict, key, limit: int, window: int) -> bool:
 
 
 def session_token(request: Request, cookie: str = "") -> str:
-    sid = cookie or request.headers.get("X-Admin-Token", "")
     if cookie:
         expires = _admin_sessions.get(cookie, 0)
         if expires > pytime.time():
             return ADMIN_TOKEN
         _admin_sessions.pop(cookie, None)
-    # Eski header sessiyalari faqat API mosligi uchun qoldirildi; yangi frontend HttpOnly cookie ishlatadi.
-    return sid
+    return ""
 
 # present = Bor, late = Kechikdi, excused = Sababli (kelmagan), unexcused = Sababsiz (kelmagan)
 # Davomat foizi = (Bor + Kechikdi) / belgilangan darslar. "Jami yo'q" = Sababli + Sababsiz.
@@ -121,8 +119,8 @@ async def security_middleware(request: Request, call_next):
     return response
 
 
-def admin(request: Request, cspu_session: str = Cookie(default=""), x_admin_token: str = Header(default="")):
-    supplied = session_token(request, cspu_session) or x_admin_token
+def admin(request: Request, cspu_session: str = Cookie(default="")):
+    supplied = session_token(request, cspu_session)
     if not secrets.compare_digest(supplied.encode(), ADMIN_TOKEN.encode()):
         raise HTTPException(401, "Parol noto'g'ri")
 
@@ -901,11 +899,10 @@ _fails: dict[str, list[float]] = {}   # guruh kodini taxmin qilishdan himoya (IP
 def member(
     request: Request,
     x_group_code: str = Header(default=""),
-    x_admin_token: str = Header(default=""),
     cspu_session: str = Cookie(default=""),
 ):
     """Starosta (admin paroli) yoki guruh kodi bilan kirgan talaba."""
-    if session_token(request, cspu_session) == ADMIN_TOKEN or (x_admin_token and secrets.compare_digest(x_admin_token.encode(), ADMIN_TOKEN.encode())):
+    if session_token(request, cspu_session) == ADMIN_TOKEN:
         return "admin"
     ip, now = client_ip(request), pytime.time()
     recent = [t for t in _fails.get(ip, []) if now - t < 300]

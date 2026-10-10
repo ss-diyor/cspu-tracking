@@ -406,7 +406,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
 const toast = t => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 2200); };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Admin-Token": token, "X-Group-Code": groupCode, "X-Student-Code": studentCode, ...(opts.headers || {}) } });
+  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Group-Code": groupCode, "X-Student-Code": studentCode, ...(opts.headers || {}) } });
   if (!res.ok) {
     const e = await res.json().catch(() => ({}));
     const err = new Error(typeof e.detail === "string" ? e.detail : "Xatolik yuz berdi");
@@ -787,7 +787,7 @@ $("#studentHistorySelect").onchange = loadStudentHistory;
 async function downloadXlsx(url) {
   if (!isAdmin) { location.href = url; return; }
   try {
-    const res = await fetch(url, { headers: { "X-Admin-Token": token } });
+    const res = await fetch(url);
     if (!res.ok) throw new Error("Yuklab bo'lmadi");
     const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
     const href = URL.createObjectURL(await res.blob());
@@ -936,7 +936,7 @@ let groupCode = localStorage.getItem("groupCode") || "";
 let docs = [], cats = [], docTag = "", docEdit = null;
 
 async function apiForm(path, fd, method = "POST") {
-  const res = await fetch(path, { method, body: fd, headers: { "X-Admin-Token": token, "X-Group-Code": groupCode } });
+  const res = await fetch(path, { method, body: fd, headers: { "X-Group-Code": groupCode } });
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || "Xatolik yuz berdi"); }
   return res.json();
 }

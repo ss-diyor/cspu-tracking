@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tourism Faculty XTA-26/5</title>
+<title>XTA 26/5 — Davomat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&display=swap" rel="stylesheet">
@@ -96,26 +96,33 @@
   footer.contact a { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 8px 12px; color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
   footer.contact svg { flex: 0 0 auto; }
   footer.contact a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.sm { padding: 6px 8px; }
+  .big { font-size: 2.4rem; font-weight: 700; line-height: 1; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 12px; }
+  .tile { text-align: center; border: 1px solid var(--line); border-radius: 8px; padding: 6px 2px; font-size: .8rem; color: var(--muted); }
+  .tile b { display: block; font-size: 1.2rem; }
+  .warn { margin-top: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--unexcused); color: var(--unexcused); font-size: .92rem; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Turizm fakulteti XTA-26/5 guruhi</h1>
+  <h1>XTA 26/5 — Davomat</h1>
   <button id="loginBtn">Log in</button>
 </header>
 
 <main>
   <nav id="tabs">
-    <button data-tab="att" class="on">Davomat</button>
-    <button data-tab="stats">Statistika</button>
+    <button data-tab="att" class="admin-only hidden">Davomat</button>
+    <button data-tab="stats" class="admin-only hidden">Statistika</button>
     <button data-tab="sch">Jadval</button>
     <button data-tab="doc">Hujjatlar</button>
+    <button data-tab="me" class="student-only">Profil</button>
     <button data-tab="stu" class="admin-only hidden">Talabalar</button>
   </nav>
 
   <!-- DAVOMAT -->
-  <section id="tab-att">
+  <section id="tab-att" class="hidden">
     <div class="row">
       <input type="date" id="date">
     </div>
@@ -270,6 +277,30 @@
     </div>
   </section>
 
+  <!-- PROFIL (talaba) -->
+  <section id="tab-me" class="hidden">
+    <div class="card hidden" id="meLock">
+      <div style="font-weight:500;margin-bottom:6px">Shaxsiy profil</div>
+      <div class="muted" style="margin-bottom:8px">O'z davomatingizni ko'rish uchun shaxsiy kodingizni kiriting. Kodni guruh sardori beradi.</div>
+      <div class="row">
+        <input id="meCode" placeholder="Shaxsiy kod" autocomplete="off" autocapitalize="characters" maxlength="12">
+        <button class="primary" id="meBtn" style="flex:0 0 auto">Kirish</button>
+      </div>
+    </div>
+    <div id="meMain" class="hidden">
+      <div class="row" style="align-items:center">
+        <div style="font-weight:500;font-size:1.05rem;overflow-wrap:anywhere" id="meName"></div>
+        <button id="meOut" style="flex:0 0 auto">Chiqish</button>
+      </div>
+      <div class="row"><select id="meMonth" aria-label="Oy"></select></div>
+      <div id="meSummary"></div>
+      <h2>Fanlar bo'yicha</h2>
+      <div class="card tbl"><table id="meSubj"></table></div>
+      <h2>Qoldirilgan va kechikkan darslar</h2>
+      <div class="card" id="meAbs"></div>
+    </div>
+  </section>
+
   <!-- TALABALAR -->
   <section id="tab-stu" class="hidden">
     <div class="card">
@@ -277,7 +308,8 @@
       <textarea id="names" rows="8" placeholder="Aliyev Vali&#10;Karimova Zilola"></textarea>
       <button class="primary" id="addStu" style="width:100%;margin-top:8px">Talabalarni qo'shish</button>
     </div>
-    <h2>Ro'yxat</h2>
+    <h2>Ro'yxat va shaxsiy kodlar</h2>
+    <div class="muted" style="margin-bottom:8px">Har bir talabaga o'z kodini alohida yuboring. 📋 tayyor xabarni nusxalaydi, ↻ yangi kod yaratadi (eskisi ishlamay qoladi).</div>
     <div class="card" id="stuList"></div>
   </section>
 </main>
@@ -298,6 +330,7 @@
 const LABEL = { present: "Bor", late: "Kechikdi", excused: "Sababli", unexcused: "Sababsiz" };
 const $ = s => document.querySelector(s);
 let token = localStorage.getItem("adminToken") || "";
+let studentCode = localStorage.getItem("studentCode") || "";
 let isAdmin = false;
 let lessonId = null;
 let marks = {};          // student_id -> status
@@ -307,15 +340,32 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
 const toast = t => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 2200); };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Admin-Token": token, "X-Group-Code": groupCode, ...(opts.headers || {}) } });
-  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || "Xatolik yuz berdi"); }
+  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Admin-Token": token, "X-Group-Code": groupCode, "X-Student-Code": studentCode, ...(opts.headers || {}) } });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    const err = new Error(typeof e.detail === "string" ? e.detail : "Xatolik yuz berdi");
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
 function setAdmin(on) {
   isAdmin = on;
   document.querySelectorAll(".admin-only").forEach(e => e.classList.toggle("hidden", !on));
+  document.querySelectorAll(".student-only").forEach(e => e.classList.toggle("hidden", on));
   $("#loginBtn").textContent = on ? "Log out" : "Log in";
+  // faol tab endi ruxsat etilmagan bo'lsa (yoki hech biri tanlanmagan bo'lsa), mosini ochamiz
+  const cur = document.querySelector("#tabs button.on");
+  if (!cur || cur.classList.contains("hidden")) showTab(on ? "att" : (studentCode ? "me" : "sch"));
+}
+
+// Starosta chiqqanda umumiy ma'lumotlar sahifadan ham tozalanadi
+function wipeAdminData() {
+  lessonId = null;
+  $("#attCard").classList.add("hidden");
+  ["attList", "statTbl", "riskList", "dayOut", "stuList", "chart"].forEach(id => $("#" + id).innerHTML = "");
+  statRows = []; trend = [];
 }
 
 // admin tokenni tekshirish: bo'sh talaba ro'yxatini yuborib ko'ramiz
@@ -325,22 +375,27 @@ async function checkToken(t) {
 }
 
 $("#loginBtn").onclick = async () => {
-  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); renderStats(); if (!$("#tab-stats").classList.contains("hidden") && !$("#statDay").classList.contains("hidden")) loadDay(); return; }
+  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); wipeAdminData(); refreshDocsIfOpen(); return; }
   const t = prompt("Starosta paroli:");
   if (!t) return;
-  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); renderStats(); if (!$("#tab-stats").classList.contains("hidden") && !$("#statDay").classList.contains("hidden")) loadDay(); }
+  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); showTab("att"); refreshDocsIfOpen(); }
   else toast("Parol noto'g'ri");
 };
 
 // Tablar
+function showTab(name) {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.tab === name));
+  ["att", "stats", "sch", "doc", "me", "stu"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+  if (name === "att") loadLessons();
+  if (name === "stats") refreshStats();
+  if (name === "sch") loadSchedule();
+  if (name === "doc") openDocs();
+  if (name === "me") loadMe();
+  if (name === "stu") loadStudents();
+}
 $("#tabs").onclick = e => {
-  const b = e.target.closest("button[data-tab]"); if (!b) return;
-  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b));
-  ["att", "stats", "sch", "doc", "stu"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== b.dataset.tab));
-  if (b.dataset.tab === "stats") refreshStats();
-  if (b.dataset.tab === "sch") loadSchedule();
-  if (b.dataset.tab === "doc") openDocs();
-  if (b.dataset.tab === "stu") loadStudents();
+  const b = e.target.closest("button[data-tab]");
+  if (b) showTab(b.dataset.tab);
 };
 
 // Darslar
@@ -596,17 +651,31 @@ async function downloadXlsx(url) {
 $("#xlsx").onclick = () => downloadXlsx("/api/export?month=" + $("#month").value);
 
 // Talabalar
+let studentRows = [];
 async function loadStudents() {
-  const rows = await api("/api/students");
+  const rows = await api("/api/students/codes");
+  studentRows = rows;
   $("#stuList").innerHTML = rows.map((r, i) => `<div class="stu" style="display:flex;gap:6px;align-items:center">
-    <span style="flex:1">${i + 1}. ${esc(r.full_name)}</span>
-    <button data-ren="${r.id}" data-name="${esc(r.full_name)}" aria-label="Ismni tahrirlash">✎</button>
-    <button data-rem="${r.id}" data-name="${esc(r.full_name)}" aria-label="Ro'yxatdan chiqarish">✕</button>
+    <div style="flex:1;min-width:0"><div>${i + 1}. ${esc(r.full_name)}</div><div class="muted">Kod: <b style="letter-spacing:1px">${esc(r.code)}</b></div></div>
+    <button class="sm" data-copy="${r.id}" aria-label="Kod xabarini nusxalash">📋</button>
+    <button class="sm" data-newcode="${r.id}" data-name="${esc(r.full_name)}" aria-label="Yangi kod yaratish">↻</button>
+    <button class="sm" data-ren="${r.id}" data-name="${esc(r.full_name)}" aria-label="Ismni tahrirlash">✎</button>
+    <button class="sm" data-rem="${r.id}" data-name="${esc(r.full_name)}" aria-label="Ro'yxatdan chiqarish">✕</button>
   </div>`).join("") || '<span class="muted">Ro\'yxat bo\'sh.</span>';
 }
 $("#stuList").onclick = async e => {
   const ren = e.target.closest("[data-ren]"), rem = e.target.closest("[data-rem]");
+  const cp = e.target.closest("[data-copy]"), nc = e.target.closest("[data-newcode]");
   try {
+    if (cp) {
+      const st = studentRows.find(x => x.id === +cp.dataset.copy); if (!st) return;
+      const msg = `Guruh sayti uchun shaxsiy kodingiz: ${st.code}\n${location.origin} sahifasida "Profil" bo'limiga kiriting. Kodni boshqalarga bermang.`;
+      try { await navigator.clipboard.writeText(msg); toast("Xabar nusxalandi"); } catch { prompt("Xabarni nusxalang:", msg); }
+    }
+    if (nc && confirm(`${nc.dataset.name} uchun yangi kod yaratiladi, eskisi ishlamay qoladi. Davom etasizmi?`)) {
+      await api(`/api/students/${nc.dataset.newcode}/code`, { method: "POST" });
+      toast("Yangi kod yaratildi"); loadStudents();
+    }
     if (ren) {
       const name = prompt("Ism-familya:", ren.dataset.name);
       if (!name || !name.trim()) return;
@@ -904,6 +973,78 @@ $("#catList").onclick = async e => {
   catch (err) { toast(err.message); }
 };
 
+// Talaba profili
+let me = null;
+const MONTHS = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentyabr", "Oktyabr", "Noyabr", "Dekabr"];
+
+function lockMe(msg) {
+  $("#meMain").classList.add("hidden"); $("#meLock").classList.remove("hidden");
+  if (msg) toast(msg);
+}
+
+async function loadMe() {
+  if (isAdmin) return;
+  if (!studentCode) return lockMe();
+  try {
+    me = await api("/api/me");
+    $("#meLock").classList.add("hidden"); $("#meMain").classList.remove("hidden");
+    $("#meName").textContent = me.name;
+    const months = [...new Set(me.records.map(r => r.date.slice(0, 7)))].sort().reverse();
+    const prev = $("#meMonth").value;
+    $("#meMonth").innerHTML = months.map(m => `<option value="${m}">${MONTHS[+m.slice(5) - 1]} ${m.slice(0, 4)}</option>`).join("") + '<option value="all">Barcha davr</option>';
+    $("#meMonth").value = [prev, iso.slice(0, 7), months[0], "all"].find(v => v && [...$("#meMonth").options].some(o => o.value === v));
+    renderMe();
+  } catch (e) {
+    if (e.status === 401) { studentCode = ""; localStorage.removeItem("studentCode"); lockMe(e.message); }
+    else lockMe(e.message);
+  }
+}
+
+function calc(list) {
+  const c = { present: 0, late: 0, excused: 0, unexcused: 0 };
+  list.forEach(r => c[r.status]++);
+  const total = list.length;
+  return { ...c, total, percent: total ? Math.round((c.present + c.late) * 100 / total) : null };
+}
+
+function renderMe() {
+  if (!me) return;
+  const sel = $("#meMonth").value;
+  const list = sel === "all" ? me.records : me.records.filter(r => r.date.startsWith(sel));
+  const c = calc(list), all = calc(me.records);
+  $("#meSummary").innerHTML = `<div class="card">
+    <div class="row" style="align-items:flex-end">
+      <div><div class="big">${c.percent === null ? "—" : c.percent + "%"}</div><div class="muted">davomat · ${c.total} ta dars</div></div>
+    </div>
+    <div class="tiles">${Object.entries(LABEL).map(([k, v]) => `<div class="tile" style="color:${COL[k]}"><b>${c[k]}</b>${v}</div>`).join("")}</div>
+    ${c.percent !== null && c.percent < me.risk_limit ? `<div class="warn">Davomatingiz ${me.risk_limit}% dan past. Sababsiz qoldirilgan darslar haqida guruh sardori bilan gaplashing.</div>` : ""}
+    ${sel !== "all" && all.percent !== null ? `<div class="muted" style="margin-top:8px">Barcha davr: ${all.percent}% (${all.total} ta dars)</div>` : ""}
+  </div>`;
+
+  const bySubj = {};
+  list.forEach(r => (bySubj[r.subject] = bySubj[r.subject] || []).push(r));
+  const rows = Object.entries(bySubj).map(([name, recs]) => ({ name, ...calc(recs) })).sort((a, b) => a.percent - b.percent);
+  $("#meSubj").innerHTML = rows.length
+    ? "<tr><th>Fan</th><th>Kelgan</th><th>%</th></tr>" +
+      rows.map(r => `<tr><td style="white-space:normal">${esc(r.name)}</td><td>${r.present + r.late} / ${r.total}</td><td class="pct">${r.percent}</td></tr>`).join("")
+    : '<tr><td class="muted">Ma\'lumot yo\'q</td></tr>';
+
+  const missed = list.filter(r => r.status !== "present");
+  $("#meAbs").innerHTML = missed.length
+    ? missed.map(r => `<div class="abs-row"><span>${dm(r.date)} · ${r.pair_no}-juftlik · ${esc(r.subject)}${r.note ? `<div class="muted">${esc(r.note)}</div>` : ""}</span><span style="color:${COL[r.status]}">${LABEL[r.status]}</span></div>`).join("")
+    : '<span class="muted">Qoldirilgan dars yo\'q ✓</span>';
+}
+
+$("#meBtn").onclick = () => {
+  const code = $("#meCode").value.trim().toUpperCase();
+  if (!code) return;
+  studentCode = code; localStorage.setItem("studentCode", code); $("#meCode").value = "";
+  loadMe();
+};
+$("#meCode").onkeydown = e => { if (e.key === "Enter") $("#meBtn").click(); };
+$("#meMonth").onchange = renderMe;
+$("#meOut").onclick = () => { studentCode = ""; localStorage.removeItem("studentCode"); me = null; lockMe(); };
+
 // Boshlash
 const today = new Date();
 const iso = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().slice(0, 10);  // mahalliy sana
@@ -911,7 +1052,6 @@ $("#date").value = iso; $("#statDate").value = iso; $("#month").value = iso.slic
 $("#date").onchange = () => { lessonId = null; loadLessons(); };
 (async () => {
   if (token && await checkToken(token)) setAdmin(true); else { token = ""; setAdmin(false); }
-  loadLessons();
 })();
 </script>
 </body>

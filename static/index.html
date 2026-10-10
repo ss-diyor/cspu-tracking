@@ -59,6 +59,13 @@
   .badge { font-size: .85rem; padding: 2px 8px; border-radius: 99px; color: #fff; }
   .abs-row { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
   .abs-row span:last-child { font-weight: 500; }
+  .reason { margin-top: 6px; display: grid; gap: 6px; }
+  .reason input, .reason select { font-size: .9rem; padding: 7px 9px; }
+  .mini { padding: 3px 8px; font-size: .8rem; margin-top: 4px; }
+  tr.risk td:first-child, tr.risk .pct { color: var(--unexcused); font-weight: 700; }
+  .risk-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .risk-item:first-of-type { border-top: 0; }
+  .risk-item b { color: var(--unexcused); }
   .dtitle { font-weight: 500; word-break: break-word; }
   .doc { margin-bottom: 10px; }
   .doc .muted { margin: 2px 0; }
@@ -133,6 +140,13 @@
       <div class="row">
         <input type="month" id="month">
         <button id="xlsx" class="primary" style="flex:0 0 auto">Excel yuklab olish</button>
+      </div>
+      <div class="card admin-only hidden" id="riskCard" style="margin-bottom:12px">
+        <div class="row" style="align-items:center;margin-bottom:6px">
+          <div style="font-weight:500;flex:1">Xavf ostida</div>
+          <label class="muted" style="flex:0 0 auto">Chegara <input type="number" id="riskLimit" min="1" max="100" style="width:64px;display:inline-block"> %</label>
+        </div>
+        <div id="riskList"></div>
       </div>
       <div class="card">
         <div class="row" id="chartMode" style="margin-bottom:6px">
@@ -263,6 +277,7 @@ let token = localStorage.getItem("adminToken") || "";
 let isAdmin = false;
 let lessonId = null;
 let marks = {};          // student_id -> status
+let notes = {}, docIds = {}, attDocs = [];   // "Sababli" uchun sabab va biriktirilgan hujjat
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const toast = t => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 2200); };
@@ -286,10 +301,10 @@ async function checkToken(t) {
 }
 
 $("#loginBtn").onclick = async () => {
-  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); return; }
+  if (isAdmin) { token = ""; localStorage.removeItem("adminToken"); setAdmin(false); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); renderStats(); if (!$("#tab-stats").classList.contains("hidden") && !$("#statDay").classList.contains("hidden")) loadDay(); return; }
   const t = prompt("Starosta paroli:");
   if (!t) return;
-  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); }
+  if (await checkToken(t)) { token = t; localStorage.setItem("adminToken", t); setAdmin(true); openLesson(lessonId); loadLessons(); refreshDocsIfOpen(); renderStats(); if (!$("#tab-stats").classList.contains("hidden") && !$("#statDay").classList.contains("hidden")) loadDay(); }
   else toast("Parol noto'g'ri");
 };
 
@@ -391,14 +406,25 @@ async function openLesson(id, title) {
   lessonId = id;
   if (title) $("#attTitle").textContent = title;
   const rows = await api(`/api/lessons/${id}/attendance`);
-  marks = {};
-  rows.forEach(r => marks[r.student_id] = r.status || "present");   // belgilanmagan = Bor
+  if (isAdmin) { try { attDocs = await api("/api/documents"); } catch { attDocs = []; } }
+  marks = {}; notes = {}; docIds = {};
+  rows.forEach(r => {
+    marks[r.student_id] = r.status || "present";   // belgilanmagan = Bor
+    notes[r.student_id] = r.note || "";
+    docIds[r.student_id] = r.doc_id || null;
+  });
+  const docOpts = sel => '<option value="">Hujjat biriktirilmagan</option>' +
+    attDocs.map(d => `<option value="${d.id}"${d.id === sel ? " selected" : ""}>${esc(d.title)}</option>`).join("");
   const list = $("#attList");
   list.className = isAdmin ? "" : "readonly";
   list.innerHTML = rows.map(r => `
     <div class="stu" data-id="${r.student_id}">
       <div class="name">${esc(r.full_name)}</div>
       <div class="seg">${Object.entries(LABEL).map(([k, v]) => `<button data-s="${k}" class="${marks[r.student_id] === k ? "on" : ""}">${v}</button>`).join("")}</div>
+      ${isAdmin ? `<div class="reason${marks[r.student_id] === "excused" ? "" : " hidden"}">
+        <input class="r-note" maxlength="300" placeholder="Sabab (masalan: kasal, oilaviy)" value="${esc(notes[r.student_id])}">
+        <select class="r-doc" aria-label="Hujjat biriktirish">${docOpts(docIds[r.student_id])}</select>
+      </div>` : ""}
     </div>`).join("") || '<span class="muted">Avval talabalarni qo\'shing.</span>';
   $("#attCard").classList.remove("hidden");
   document.querySelectorAll("#lessons button").forEach(b => b.classList.toggle("on", b.textContent === $("#attTitle").textContent));
@@ -409,10 +435,22 @@ $("#attList").onclick = e => {
   const row = b.closest(".stu");
   marks[row.dataset.id] = b.dataset.s;
   row.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  const reason = row.querySelector(".reason");
+  if (reason) reason.classList.toggle("hidden", b.dataset.s !== "excused");
 };
 
+$("#attList").addEventListener("input", e => {
+  const row = e.target.closest(".stu"); if (!row || !isAdmin) return;
+  if (e.target.classList.contains("r-note")) notes[row.dataset.id] = e.target.value;
+  if (e.target.classList.contains("r-doc")) docIds[row.dataset.id] = e.target.value ? +e.target.value : null;
+});
+
 $("#saveAtt").onclick = async () => {
-  const records = Object.entries(marks).map(([student_id, status]) => ({ student_id: +student_id, status }));
+  const records = Object.entries(marks).map(([student_id, status]) => ({
+    student_id: +student_id, status,
+    note: status === "excused" ? (notes[student_id] || "") : "",
+    doc_id: status === "excused" ? (docIds[student_id] || null) : null
+  }));
   try { await api(`/api/lessons/${lessonId}/attendance`, { method: "PUT", body: JSON.stringify({ records }) }); toast("Saqlandi"); }
   catch (e) { toast(e.message); }
 };
@@ -423,9 +461,25 @@ async function loadStats() {
   if (!m) return;
   const [rows, tr] = await Promise.all([api("/api/stats?month=" + m), api("/api/stats/trend?month=" + m)]);
   trend = tr; drawChart();
-  $("#statTbl").innerHTML = `<tr><th>Talaba</th><th>Bor</th><th>Kechikdi</th><th>Sababli</th><th>Sababsiz</th><th>%</th></tr>` +
-    rows.map(r => `<tr><td>${esc(r.full_name)}</td><td>${r.present}</td><td>${r.late}</td><td>${r.excused}</td><td>${r.unexcused}</td><td class="pct">${r.percent ?? "—"}</td></tr>`).join("");
+  statRows = rows; renderStats();
 }
+
+// Xavf ostidagilar faqat starostaga ko'rinadi (boshqa talabalar oldida sharmanda qilmaslik uchun)
+let statRows = [];
+const riskLimit = () => Math.min(100, Math.max(1, +$("#riskLimit").value || 75));
+
+function renderStats() {
+  const lim = riskLimit();
+  const low = r => isAdmin && r.percent !== null && r.percent < lim;
+  $("#statTbl").innerHTML = `<tr><th>Talaba</th><th>Bor</th><th>Kechikdi</th><th>Sababli</th><th>Sababsiz</th><th>%</th></tr>` +
+    statRows.map(r => `<tr class="${low(r) ? "risk" : ""}"><td>${esc(r.full_name)}</td><td>${r.present}</td><td>${r.late}</td><td>${r.excused}</td><td>${r.unexcused}</td><td class="pct">${r.percent ?? "—"}</td></tr>`).join("");
+  const risky = statRows.filter(low).sort((a, b) => a.percent - b.percent);
+  $("#riskList").innerHTML = risky.length
+    ? risky.map(r => `<div class="risk-item"><span>${esc(r.full_name)}</span><span><b>${r.percent}%</b> · sababsiz ${r.unexcused}, sababli ${r.excused}</span></div>`).join("")
+    : `<span class="muted">${statRows.length ? `Hech kim ${lim}% dan past emas ✓` : "Bu oyda ma'lumot yo'q."}</span>`;
+}
+$("#riskLimit").value = localStorage.getItem("riskLimit") || 75;
+$("#riskLimit").oninput = () => { localStorage.setItem("riskLimit", $("#riskLimit").value); renderStats(); };
 // Grafik (oylik): har bir dars kuni uchun
 let trend = [], chartMode = "line";
 const COL = { present: "var(--present)", late: "var(--late)", excused: "var(--excused)", unexcused: "var(--unexcused)" };
@@ -488,12 +542,19 @@ async function loadDay() {
   $("#dayOut").innerHTML = lessons.length ? lessons.map(l => {
     const badges = l.total ? Object.entries(LABEL).map(([k, v]) => l[k] ? `<span class="badge" style="background:${COL[k]}">${v}: ${l[k]}</span>` : "").join("") : "";
     const abs = !l.total ? '<span class="muted">Davomat hali belgilanmagan.</span>'
-      : l.absentees.length ? l.absentees.map(a => `<div class="abs-row"><span>${esc(a.full_name)}</span><span style="color:${COL[a.status]}">${LABEL[a.status]}</span></div>`).join("")
+      : l.absentees.length ? l.absentees.map(a => `<div class="abs-row"><span>${esc(a.full_name)}${a.note ? `<div class="muted">${esc(a.note)}</div>` : ""}${a.doc_id ? `<div><button class="mini" data-doc="${a.doc_id}">📎 ${esc(a.doc_title || "Hujjat")}</button></div>` : ""}</span><span style="color:${COL[a.status]}">${LABEL[a.status]}</span></div>`).join("")
       : '<span class="muted">Hamma kelgan ✓</span>';
     return `<div class="card" style="margin-bottom:12px"><div style="font-weight:500">${l.pair_no}-juftlik · ${esc(l.subject)}</div><div class="badges">${badges}</div>${abs}</div>`;
   }).join("") : '<div class="card muted">Bu kunda dars qo\'shilmagan.</div>';
 }
 $("#statDate").onchange = loadDay;
+$("#dayOut").onclick = async e => {
+  const b = e.target.closest("button[data-doc]"); if (!b) return;
+  try {
+    const r = await api(`/api/documents/${b.dataset.doc}/open`);
+    if (!window.open(r.url, "_blank")) location.href = r.url;
+  } catch (err) { toast(err.message); }
+};
 $("#xlsxWeek").onclick = () => { if ($("#statDate").value) location.href = "/api/export/week?day=" + $("#statDate").value; };
 
 function refreshStats() { $("#statDay").classList.contains("hidden") ? loadStats() : loadDay(); }

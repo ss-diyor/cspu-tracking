@@ -72,6 +72,17 @@ ALTER TABLE attendance ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
 ALTER TABLE students ADD COLUMN IF NOT EXISTS access_code TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_students_access_code ON students (access_code) WHERE access_code IS NOT NULL;
 
+-- Har bir ma'lumot alohida guruhga tegishli
+ALTER TABLE students  ADD COLUMN IF NOT EXISTS group_id INT;
+ALTER TABLE lessons   ADD COLUMN IF NOT EXISTS group_id INT;
+ALTER TABLE schedule  ADD COLUMN IF NOT EXISTS group_id INT;
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS group_id INT;
+ALTER TABLE documents  ADD COLUMN IF NOT EXISTS group_id INT;
+ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_lesson_date_pair_no_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_group_date_pair ON lessons (group_id, lesson_date, pair_no);
+ALTER TABLE categories DROP CONSTRAINT IF EXISTS categories_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_group_name ON categories (group_id, name);
+
 -- Admin va muhim o'zgarishlar uchun audit jurnali
 CREATE TABLE IF NOT EXISTS audit_log (
     id         BIGSERIAL PRIMARY KEY,

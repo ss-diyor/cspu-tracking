@@ -149,7 +149,7 @@
 </head>
 <body>
 <header>
-  <h1>XTA-26/5</h1>
+  <h1 id="brand">XTA-26/5</h1>
   <button id="loginBtn">Log in</button>
 </header>
 
@@ -412,6 +412,7 @@ const $ = s => document.querySelector(s);
 let token = ""; // Admin autentifikatsiyasi HttpOnly cookie orqali amalga oshadi.
 let studentCode = localStorage.getItem("studentCode") || "";
 let isAdmin = false;
+let isPlatformAdmin = false;
 let lessonId = null;
 let marks = {};          // student_id -> status
 let notes = {};          // student_id -> "Sababli" sababi
@@ -430,10 +431,14 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-function setAdmin(on) {
+function setAdmin(on, platform = false, groupName = "") {
   isAdmin = on;
+  isPlatformAdmin = on && platform;
+  if (on && groupName) $("#brand").textContent = groupName;
+  if (!on || platform) $("#brand").textContent = "XTA-26/5";
   document.querySelectorAll(".admin-only").forEach(e => e.classList.toggle("hidden", !on));
   document.querySelectorAll(".student-only").forEach(e => e.classList.toggle("hidden", on));
+  document.querySelectorAll('[data-tab="platform"]').forEach(e => e.classList.toggle("hidden", !isPlatformAdmin));
   $("#loginBtn").textContent = on ? "Log out" : "Log in";
   // faol tab endi ruxsat etilmagan bo'lsa (yoki hech biri tanlanmagan bo'lsa), mosini ochamiz
   const cur = document.querySelector("#tabs button.on");
@@ -456,10 +461,13 @@ async function checkToken(t) {
 
 $("#loginBtn").onclick = async () => {
   if (isAdmin) { await fetch("/api/auth/logout", { method: "POST" }); token = ""; setAdmin(false); wipeAdminData(); refreshDocsIfOpen(); return; }
-  const t = prompt("Starosta paroli:");
+  const t = prompt("Platforma admin paroli yoki guruh sardori kodini kiriting:");
   if (!t) return;
-  if (await checkToken(t)) { setAdmin(true); showTab("att"); refreshDocsIfOpen(); }
-  else toast("Parol noto'g'ri");
+  const platform = await checkToken(t);
+  if (platform) { setAdmin(true, true); showTab("att"); refreshDocsIfOpen(); return; }
+  const captain = await fetch("/api/auth/group-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: t }) });
+  if (captain.ok) { const info = await captain.json(); setAdmin(true, false, info.group || ""); showTab("att"); refreshDocsIfOpen(); }
+  else toast("Parol yoki guruh kodi noto'g'ri");
 };
 
 // Tablar
@@ -1261,7 +1269,7 @@ $("#date").onchange = () => { lessonId = null; loadLessons(); };
 loadTodayWidget();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 (async () => {
-  try { const r = await fetch("/api/auth/session"); if (r.ok) setAdmin(true); else setAdmin(false); }
+  try { const r = await fetch("/api/auth/session"); if (r.ok) { const s = await r.json(); setAdmin(true, s.role === "platform", s.group || ""); } else setAdmin(false); }
   catch { setAdmin(false); }
 })();
 </script>

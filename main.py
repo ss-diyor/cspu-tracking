@@ -29,8 +29,10 @@ ADMIN_TOKEN = os.environ["ADMIN_TOKEN"]
 SESSION_TTL = int(os.environ.get("ADMIN_SESSION_TTL", "43200"))
 ALLOWED_ORIGINS = {x.strip().rstrip("/") for x in os.environ.get("ALLOWED_ORIGINS", "").split(",") if x.strip()}
 _admin_sessions: dict[str, float] = {}
+_group_sessions: dict[str, tuple[int, float]] = {}
 _request_buckets: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _login_failures: dict[str, deque[float]] = defaultdict(deque)
+DEFAULT_GROUP_ID = 1
 
 
 def client_ip(request: Request) -> str:
@@ -57,6 +59,16 @@ def session_token(request: Request, cookie: str = "") -> str:
             return ADMIN_TOKEN
         _admin_sessions.pop(cookie, None)
     return ""
+
+
+def group_session_id(cookie: str) -> int | None:
+    if not cookie:
+        return None
+    item = _group_sessions.get(cookie)
+    if item and item[1] > pytime.time():
+        return item[0]
+    _group_sessions.pop(cookie, None)
+    return None
 
 # present = Bor, late = Kechikdi, excused = Sababli (kelmagan), unexcused = Sababsiz (kelmagan)
 # Davomat foizi = (Bor + Kechikdi) / belgilangan darslar. "Jami yo'q" = Sababli + Sababsiz.
@@ -96,9 +108,19 @@ async def lifespan(app: FastAPI):
         )"""
     )
     await app.state.pool.execute("CREATE INDEX IF NOT EXISTS idx_group_access_codes_group ON group_access_codes (group_id, active)")
-    await app.state.pool.execute(
-        "INSERT INTO groups (name, slug) VALUES ('XTA-26/5', 'xta-26-5') ON CONFLICT (slug) DO NOTHING"
+    global DEFAULT_GROUP_ID
+    DEFAULT_GROUP_ID = await app.state.pool.fetchval(
+        "INSERT INTO groups (name, slug) VALUES ('XTA-26/5', 'xta-26-5') "
+        "ON CONFLICT (slug) DO UPDATE SET name=EXCLUDED.name RETURNING id"
     )
+    for table in ("students", "lessons", "schedule", "categories", "documents"):
+        await app.state.pool.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS group_id INT")
+        await app.state.pool.execute(f"UPDATE {table} SET group_id=$1 WHERE group_id IS NULL", DEFAULT_GROUP_ID)
+        await app.state.pool.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_group_id ON {table} (group_id)")
+    await app.state.pool.execute("ALTER TABLE categories DROP CONSTRAINT IF EXISTS categories_name_key")
+    await app.state.pool.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_group_name ON categories (group_id, name)")
+    await app.state.pool.execute("ALTER TABLE lessons DROP CONSTRAINT IF EXISTS lessons_lesson_date_pair_no_key")
+    await app.state.pool.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_group_date_pair ON lessons (group_id, lesson_date, pair_no)")
     app.state.http = httpx.AsyncClient(timeout=60)
     if SUPABASE_URL:
         log.info("Supabase Storage manzili: %s", SUPABASE_URL)
@@ -114,6 +136,7 @@ app = FastAPI(title="Guruh sayti", lifespan=lifespan)
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     if request.url.path.startswith("/api/"):
+        request.state.group_id = group_session_id(request.cookies.get("cspu_group_session")) or DEFAULT_GROUP_ID
         ip = client_ip(request)
         bucket = "login" if request.url.path == "/api/auth/login" else "api"
         limits = (5, 300) if bucket == "login" else (120, 60)
@@ -137,10 +160,27 @@ async def security_middleware(request: Request, call_next):
     return response
 
 
-def admin(request: Request, cspu_session: str = Cookie(default="")):
-    supplied = session_token(request, cspu_session)
-    if not secrets.compare_digest(supplied.encode(), ADMIN_TOKEN.encode()):
-        raise HTTPException(401, "Parol noto'g'ri")
+def admin(request: Request, cspu_session: str = Cookie(default=""), cspu_group_session: str = Cookie(default="")):
+    if session_token(request, cspu_session) == ADMIN_TOKEN:
+        request.state.group_id = DEFAULT_GROUP_ID
+        request.state.role = "platform"
+        return
+    group_id = group_session_id(cspu_group_session)
+    if group_id:
+        request.state.group_id = group_id
+        request.state.role = "captain"
+        return
+    raise HTTPException(401, "Sessiya tugagan")
+
+
+def gid(request: Request) -> int:
+    return int(getattr(request.state, "group_id", DEFAULT_GROUP_ID))
+
+
+def platform_admin(request: Request, cspu_session: str = Cookie(default="")):
+    if session_token(request, cspu_session) != ADMIN_TOKEN:
+        raise HTTPException(403, "Faqat platforma admini uchun")
+    request.state.role = "platform"
 
 
 async def audit(request: Request, action: str, entity: str = "", entity_id: int | None = None, detail: str = ""):
@@ -155,6 +195,10 @@ async def audit(request: Request, action: str, entity: str = "", entity_id: int 
 
 class LoginIn(BaseModel):
     password: str
+
+
+class GroupCodeLoginIn(BaseModel):
+    code: str
 
 
 class GroupIn(BaseModel):
@@ -198,22 +242,50 @@ async def login(body: LoginIn, request: Request, response: Response):
     return {"ok": True}
 
 
+@app.post("/api/auth/group-login")
+async def group_login(body: GroupCodeLoginIn, request: Request, response: Response):
+    ip = client_ip(request)
+    if not _allow(_login_failures, (ip, "group"), 10, 300):
+        raise HTTPException(429, "Juda ko'p urinish. 5 daqiqadan keyin qayta urinib ko'ring")
+    row = await app.state.pool.fetchrow(
+        "SELECT c.id, c.group_id, g.name FROM group_access_codes c "
+        "JOIN groups g ON g.id=c.group_id "
+        "WHERE c.code_hash=$1 AND c.active AND g.active",
+        hash_access_code(body.code),
+    )
+    if not row:
+        await audit(request, "group_login_failed", detail="invalid access code")
+        raise HTTPException(401, "Guruh kodi noto'g'ri")
+    sid = secrets.token_urlsafe(32)
+    _group_sessions[sid] = (row["group_id"], pytime.time() + SESSION_TTL)
+    response.set_cookie("cspu_group_session", sid, max_age=SESSION_TTL, httponly=True,
+                        secure=request.url.scheme == "https", samesite="lax", path="/")
+    await audit(request, "group_login_success", "group", row["group_id"], f"code_id={row['id']}")
+    return {"ok": True, "role": "captain", "group": row["name"]}
+
+
 @app.get("/api/auth/session")
-async def auth_session(request: Request, cspu_session: str = Cookie(default="")):
-    if session_token(request, cspu_session) != ADMIN_TOKEN:
-        raise HTTPException(401, "Sessiya tugagan")
-    return {"ok": True}
+async def auth_session(request: Request, cspu_session: str = Cookie(default=""), cspu_group_session: str = Cookie(default="")):
+    if session_token(request, cspu_session) == ADMIN_TOKEN:
+        return {"ok": True, "role": "platform", "group_id": DEFAULT_GROUP_ID}
+    group_id = group_session_id(cspu_group_session)
+    if group_id:
+        group_name = await app.state.pool.fetchval("SELECT name FROM groups WHERE id=$1 AND active", group_id)
+        return {"ok": True, "role": "captain", "group_id": group_id, "group": group_name}
+    raise HTTPException(401, "Sessiya tugagan")
 
 
 @app.post("/api/auth/logout")
-async def logout(request: Request, response: Response, cspu_session: str = Cookie(default="")):
+async def logout(request: Request, response: Response, cspu_session: str = Cookie(default=""), cspu_group_session: str = Cookie(default="")):
     _admin_sessions.pop(cspu_session, None)
+    _group_sessions.pop(cspu_group_session, None)
     response.delete_cookie("cspu_session", path="/")
+    response.delete_cookie("cspu_group_session", path="/")
     await audit(request, "logout", detail="admin session")
     return {"ok": True}
 
 
-@app.get("/api/audit", dependencies=[Depends(admin)])
+@app.get("/api/audit", dependencies=[Depends(platform_admin)])
 async def audit_log(limit: int = 100):
     limit = min(500, max(1, limit))
     rows = await app.state.pool.fetch(
@@ -222,7 +294,7 @@ async def audit_log(limit: int = 100):
     )
     return [dict(r) for r in rows]
 
-@app.get("/api/platform/groups", dependencies=[Depends(admin)])
+@app.get("/api/platform/groups", dependencies=[Depends(platform_admin)])
 async def platform_groups():
     rows = await app.state.pool.fetch(
         "SELECT g.id, g.name, g.slug, g.active, g.created_at, "
@@ -232,7 +304,7 @@ async def platform_groups():
     )
     return [dict(r) for r in rows]
 
-@app.post("/api/platform/groups", dependencies=[Depends(admin)])
+@app.post("/api/platform/groups", dependencies=[Depends(platform_admin)])
 async def create_platform_group(body: GroupIn, request: Request):
     name = body.name.strip()[:120]
     if not name:
@@ -248,7 +320,7 @@ async def create_platform_group(body: GroupIn, request: Request):
     await audit(request, "group_create", "group", row["id"], name)
     return dict(row)
 
-@app.get("/api/platform/groups/{group_id}/codes", dependencies=[Depends(admin)])
+@app.get("/api/platform/groups/{group_id}/codes", dependencies=[Depends(platform_admin)])
 async def list_group_codes(group_id: int):
     rows = await app.state.pool.fetch(
         "SELECT id, label, code_hint, active, created_at, revoked_at "
@@ -256,7 +328,7 @@ async def list_group_codes(group_id: int):
     )
     return [dict(r) for r in rows]
 
-@app.post("/api/platform/groups/{group_id}/codes", dependencies=[Depends(admin)])
+@app.post("/api/platform/groups/{group_id}/codes", dependencies=[Depends(platform_admin)])
 async def create_group_code(group_id: int, body: AccessCodeIn, request: Request):
     if not await app.state.pool.fetchval("SELECT 1 FROM groups WHERE id=$1 AND active", group_id):
         raise HTTPException(404, "Guruh topilmadi")
@@ -271,7 +343,7 @@ async def create_group_code(group_id: int, body: AccessCodeIn, request: Request)
     result["code"] = code
     return result
 
-@app.delete("/api/platform/codes/{code_id}", dependencies=[Depends(admin)])
+@app.delete("/api/platform/codes/{code_id}", dependencies=[Depends(platform_admin)])
 async def revoke_group_code(code_id: int, request: Request):
     row = await app.state.pool.fetchrow(
         "UPDATE group_access_codes SET active=FALSE, revoked_at=now() "
@@ -315,21 +387,21 @@ class AttendanceIn(BaseModel):
 
 # ---------- Talabalar ----------
 @app.get("/api/students", dependencies=[Depends(admin)])
-async def list_students():
+async def list_students(request: Request):
     rows = await app.state.pool.fetch(
-        "SELECT id, full_name FROM students WHERE active ORDER BY sort_order, full_name"
+        "SELECT id, full_name FROM students WHERE active AND group_id=$1 ORDER BY sort_order, full_name", gid(request)
     )
     return [dict(r) for r in rows]
 
 
 @app.post("/api/students", dependencies=[Depends(admin)])
-async def add_students(body: StudentsIn):
+async def add_students(body: StudentsIn, request: Request):
     names = [n.strip() for n in body.names if n.strip()]
     async with app.state.pool.acquire() as con:
-        start = await con.fetchval("SELECT COALESCE(MAX(sort_order), 0) FROM students")
+        start = await con.fetchval("SELECT COALESCE(MAX(sort_order), 0) FROM students WHERE group_id=$1", gid(request))
         await con.executemany(
-            "INSERT INTO students (full_name, sort_order) VALUES ($1, $2)",
-            [(n, start + i + 1) for i, n in enumerate(names)],
+            "INSERT INTO students (full_name, sort_order, group_id) VALUES ($1, $2, $3)",
+            [(n, start + i + 1, gid(request)) for i, n in enumerate(names)],
         )
     return {"added": len(names)}
 
@@ -339,12 +411,12 @@ class NameIn(BaseModel):
 
 
 @app.put("/api/students/{student_id}", dependencies=[Depends(admin)])
-async def rename_student(student_id: int, body: NameIn):
+async def rename_student(student_id: int, body: NameIn, request: Request):
     name = body.full_name.strip()
     if not name:
         raise HTTPException(400, "Ism bo'sh bo'lmasligi kerak")
     res = await app.state.pool.execute(
-        "UPDATE students SET full_name = $1 WHERE id = $2", name, student_id
+        "UPDATE students SET full_name = $1 WHERE id = $2 AND group_id=$3", name, student_id, gid(request)
     )
     if res == "UPDATE 0":
         raise HTTPException(404, "Talaba topilmadi")
@@ -352,19 +424,19 @@ async def rename_student(student_id: int, body: NameIn):
 
 
 @app.delete("/api/students/{student_id}", dependencies=[Depends(admin)])
-async def remove_student(student_id: int):
+async def remove_student(student_id: int, request: Request):
     # Davomat tarixi saqlanib qolishi uchun o'chirmaymiz, faqat ro'yxatdan yashiramiz
-    await app.state.pool.execute("UPDATE students SET active = FALSE WHERE id = $1", student_id)
+    await app.state.pool.execute("UPDATE students SET active = FALSE WHERE id = $1 AND group_id=$2", student_id, gid(request))
     return {"ok": True}
 
 
 # ---------- Darslar ----------
 @app.get("/api/lessons")
-async def list_lessons(lesson_date: date):
+async def list_lessons(lesson_date: date, request: Request):
     rows = await app.state.pool.fetch(
         "SELECT id, lesson_date, pair_no, subject FROM lessons "
-        "WHERE lesson_date = $1 ORDER BY pair_no",
-        lesson_date,
+        "WHERE lesson_date = $1 AND group_id=$2 ORDER BY pair_no",
+        lesson_date, gid(request),
     )
     return [dict(r) for r in rows]
 
@@ -372,10 +444,10 @@ async def list_lessons(lesson_date: date):
 @app.post("/api/lessons", dependencies=[Depends(admin)])
 async def create_lesson(body: LessonIn, request: Request):
     row = await app.state.pool.fetchrow(
-        "INSERT INTO lessons (lesson_date, pair_no, subject) VALUES ($1, $2, $3) "
-        "ON CONFLICT (lesson_date, pair_no) DO UPDATE SET subject = EXCLUDED.subject "
+        "INSERT INTO lessons (lesson_date, pair_no, subject, group_id) VALUES ($1, $2, $3, $4) "
+        "ON CONFLICT (group_id, lesson_date, pair_no) DO UPDATE SET subject = EXCLUDED.subject "
         "RETURNING id, lesson_date, pair_no, subject",
-        body.lesson_date, body.pair_no, body.subject.strip(),
+        body.lesson_date, body.pair_no, body.subject.strip(), gid(request),
     )
     await audit(request, "lesson_create", "lesson", row["id"], f"{body.lesson_date} pair={body.pair_no}")
     return dict(row)
@@ -392,8 +464,8 @@ async def edit_lesson(lesson_id: int, body: LessonEdit, request: Request):
         raise HTTPException(400, "Fan nomini yozing")
     try:
         res = await app.state.pool.execute(
-            "UPDATE lessons SET subject = $1, pair_no = $2 WHERE id = $3",
-            body.subject.strip(), body.pair_no, lesson_id,
+            "UPDATE lessons SET subject = $1, pair_no = $2 WHERE id = $3 AND group_id=$4",
+            body.subject.strip(), body.pair_no, lesson_id, gid(request),
         )
     except asyncpg.UniqueViolationError:
         raise HTTPException(409, "Bu juftlikda boshqa dars bor")
@@ -406,20 +478,20 @@ async def edit_lesson(lesson_id: int, body: LessonEdit, request: Request):
 @app.delete("/api/lessons/{lesson_id}", dependencies=[Depends(admin)])
 async def delete_lesson(lesson_id: int, request: Request):
     # attendance yozuvlari ON DELETE CASCADE bilan birga o'chadi
-    await app.state.pool.execute("DELETE FROM lessons WHERE id = $1", lesson_id)
+    await app.state.pool.execute("DELETE FROM lessons WHERE id = $1 AND group_id=$2", lesson_id, gid(request))
     await audit(request, "lesson_delete", "lesson", lesson_id)
     return {"ok": True}
 
 
 # ---------- Davomat ----------
 @app.get("/api/lessons/{lesson_id}/attendance", dependencies=[Depends(admin)])
-async def get_attendance(lesson_id: int):
+async def get_attendance(lesson_id: int, request: Request):
     rows = await app.state.pool.fetch(
         "SELECT s.id AS student_id, s.full_name, a.status, a.note "
         "FROM students s LEFT JOIN attendance a "
         "ON a.student_id = s.id AND a.lesson_id = $1 "
-        "WHERE s.active ORDER BY s.sort_order, s.full_name",
-        lesson_id,
+        "WHERE s.active AND s.group_id=$2 ORDER BY s.sort_order, s.full_name",
+        lesson_id, gid(request),
     )
     return [dict(r) for r in rows]
 
@@ -430,6 +502,15 @@ async def save_attendance(lesson_id: int, body: AttendanceIn, request: Request):
         if r.status not in STATUSES:
             raise HTTPException(400, f"Noto'g'ri status: {r.status}")
     rows = []
+    group_id = gid(request)
+    if not await app.state.pool.fetchval("SELECT 1 FROM lessons WHERE id=$1 AND group_id=$2", lesson_id, group_id):
+        raise HTTPException(404, "Dars topilmadi")
+    student_ids = list({r.student_id for r in body.records})
+    valid_students = await app.state.pool.fetchval(
+        "SELECT COUNT(*) FROM students WHERE id=ANY($1::int[]) AND group_id=$2", student_ids, group_id
+    ) if student_ids else 0
+    if valid_students != len(student_ids):
+        raise HTTPException(400, "Talaba ushbu guruhga tegishli emas")
     for r in body.records:
         ex = r.status == "excused"      # sabab faqat "Sababli" bo'lsa saqlanadi
         rows.append((lesson_id, r.student_id, r.status, r.note.strip()[:300] if ex else ""))
@@ -450,7 +531,7 @@ async def save_attendance(lesson_id: int, body: AttendanceIn, request: Request):
 
 
 # ---------- Statistika ----------
-async def month_stats(month: str):
+async def month_stats(month: str, group_id: int):
     start, end = month_range(month)
     rows = await app.state.pool.fetch(
         """
@@ -463,13 +544,13 @@ async def month_stats(month: str):
         LEFT JOIN (
             SELECT a.* FROM attendance a
             JOIN lessons l ON l.id = a.lesson_id
-            WHERE l.lesson_date >= $1 AND l.lesson_date < $2
+            WHERE l.lesson_date >= $1 AND l.lesson_date < $2 AND l.group_id=$3
         ) a ON a.student_id = s.id
-        WHERE s.active
+        WHERE s.active AND s.group_id=$3
         GROUP BY s.id, s.full_name, s.sort_order
         ORDER BY s.sort_order, s.full_name
         """,
-        start, end,
+        start, end, group_id,
     )
     out = []
     for r in rows:
@@ -481,12 +562,12 @@ async def month_stats(month: str):
 
 
 @app.get("/api/stats", dependencies=[Depends(admin)])
-async def stats(month: str):
-    return await month_stats(month)
+async def stats(month: str, request: Request):
+    return await month_stats(month, gid(request))
 
 
 @app.get("/api/stats/trend", dependencies=[Depends(admin)])
-async def stats_trend(month: str):
+async def stats_trend(month: str, request: Request):
     """Oy ichidagi har bir kun uchun jami davomat (grafik uchun)."""
     start, end = month_range(month)
     rows = await app.state.pool.fetch(
@@ -499,11 +580,11 @@ async def stats_trend(month: str):
         FROM lessons l
         JOIN attendance a ON a.lesson_id = l.id
         JOIN students s ON s.id = a.student_id AND s.active
-        WHERE l.lesson_date >= $1 AND l.lesson_date < $2
+        WHERE l.lesson_date >= $1 AND l.lesson_date < $2 AND l.group_id=$3
         GROUP BY l.lesson_date
         ORDER BY l.lesson_date
         """,
-        start, end,
+        start, end, gid(request),
     )
     out = []
     for r in rows:
@@ -519,7 +600,7 @@ async def stats_trend(month: str):
 
 
 @app.get("/api/stats/week", dependencies=[Depends(admin)])
-async def stats_week(week: date):
+async def stats_week(week: date, request: Request):
     """Tanlangan sana joylashgan dushanba-juma haftasi uchun kunlik statistika."""
     monday = week - timedelta(days=week.weekday())
     until = monday + timedelta(days=5)
@@ -533,11 +614,11 @@ async def stats_week(week: date):
         FROM lessons l
         JOIN attendance a ON a.lesson_id = l.id
         JOIN students s ON s.id = a.student_id AND s.active
-        WHERE l.lesson_date >= $1 AND l.lesson_date < $2
+        WHERE l.lesson_date >= $1 AND l.lesson_date < $2 AND l.group_id=$3
         GROUP BY l.lesson_date
         ORDER BY l.lesson_date
         """,
-        monday, until,
+        monday, until, gid(request),
     )
     by_day = {r["d"]: r for r in rows}
     out = []
@@ -552,30 +633,30 @@ async def stats_week(week: date):
 
 
 @app.get("/api/stats/student", dependencies=[Depends(admin)])
-async def stats_student(student_id: int):
+async def stats_student(student_id: int, request: Request):
     """Bitta faol talabaning darslar bo'yicha davomat tarixi."""
-    found = await app.state.pool.fetchval("SELECT 1 FROM students WHERE id = $1 AND active", student_id)
+    found = await app.state.pool.fetchval("SELECT 1 FROM students WHERE id = $1 AND active AND group_id=$2", student_id, gid(request))
     if not found:
         raise HTTPException(404, "Talaba topilmadi")
     rows = await app.state.pool.fetch(
         """
         SELECT l.lesson_date AS d, l.pair_no, l.subject, a.status
         FROM attendance a JOIN lessons l ON l.id = a.lesson_id
-        WHERE a.student_id = $1
+        WHERE a.student_id = $1 AND l.group_id=$2
         ORDER BY l.lesson_date, l.pair_no
-        """, student_id,
+        """, student_id, gid(request),
     )
     return [{"date": r["d"].isoformat(), "pair_no": r["pair_no"],
              "subject": r["subject"], "status": r["status"]} for r in rows]
 
 
 @app.get("/api/stats/day", dependencies=[Depends(admin)])
-async def stats_day(lesson_date: date):
+async def stats_day(lesson_date: date, request: Request):
     """Bitta kun: har bir dars bo'yicha sonlar va kelmaganlar ro'yxati."""
     pool = app.state.pool
     lessons = await pool.fetch(
-        "SELECT id, pair_no, subject FROM lessons WHERE lesson_date = $1 ORDER BY pair_no",
-        lesson_date,
+        "SELECT id, pair_no, subject FROM lessons WHERE lesson_date = $1 AND group_id=$2 ORDER BY pair_no",
+        lesson_date, gid(request),
     )
     ids = [l["id"] for l in lessons]
     recs = await pool.fetch(
@@ -749,37 +830,37 @@ def build_week_workbook(students, monday, lesson_ids, att, notes=None):
     return wb
 
 
-async def load_span(first: date, until: date):
+async def load_span(first: date, until: date, group_id: int):
     pool = app.state.pool
     lrows = await pool.fetch(
-        "SELECT id, lesson_date, pair_no FROM lessons WHERE lesson_date >= $1 AND lesson_date < $2",
-        first, until,
+        "SELECT id, lesson_date, pair_no FROM lessons WHERE lesson_date >= $1 AND lesson_date < $2 AND group_id=$3",
+        first, until, group_id,
     )
     arows = await pool.fetch(
         "SELECT a.lesson_id, a.student_id, a.status FROM attendance a "
-        "JOIN lessons l ON l.id = a.lesson_id WHERE l.lesson_date >= $1 AND l.lesson_date < $2",
-        first, until,
+        "JOIN lessons l ON l.id = a.lesson_id WHERE l.lesson_date >= $1 AND l.lesson_date < $2 AND l.group_id=$3",
+        first, until, group_id,
     )
     lesson_ids = {(r["lesson_date"], r["pair_no"]): r["id"] for r in lrows}
     att = {(r["lesson_id"], r["student_id"]): r["status"] for r in arows}
     return lesson_ids, att
 
 
-async def load_notes(first: date, until: date) -> list:
+async def load_notes(first: date, until: date, group_id: int) -> list:
     """"Sababli" izohlari: [(talaba_id, sana, izoh)]."""
     rows = await app.state.pool.fetch(
         "SELECT a.student_id, l.lesson_date, a.note FROM attendance a "
         "JOIN lessons l ON l.id = a.lesson_id "
-        "WHERE a.status = 'excused' AND a.note <> '' AND l.lesson_date >= $1 AND l.lesson_date < $2 "
+        "WHERE a.status = 'excused' AND a.note <> '' AND l.lesson_date >= $1 AND l.lesson_date < $2 AND l.group_id=$3 "
         "ORDER BY l.lesson_date, l.pair_no",
-        first, until,
+        first, until, group_id,
     )
     return [(r["student_id"], r["lesson_date"], r["note"]) for r in rows]
 
 
-async def active_students():
+async def active_students(group_id: int):
     rows = await app.state.pool.fetch(
-        "SELECT id, full_name FROM students WHERE active ORDER BY sort_order, full_name"
+        "SELECT id, full_name FROM students WHERE active AND group_id=$1 ORDER BY sort_order, full_name", group_id
     )
     return [dict(r) for r in rows]
 
@@ -796,12 +877,12 @@ def xlsx_response(wb, filename: str):
 
 
 @app.get("/api/export", dependencies=[Depends(admin)])
-async def export_month(month: str):
+async def export_month(month: str, request: Request):
     """Oylik hisobot: har hafta uchun alohida varaq (shablon ko'rinishida) + 'Oy jami'."""
     start, end = month_range(month)
     days = await app.state.pool.fetch(
-        "SELECT DISTINCT lesson_date FROM lessons WHERE lesson_date >= $1 AND lesson_date < $2",
-        start, end,
+        "SELECT DISTINCT lesson_date FROM lessons WHERE lesson_date >= $1 AND lesson_date < $2 AND group_id=$3",
+        start, end, gid(request),
     )
     mondays = sorted({
         r["lesson_date"] - timedelta(days=r["lesson_date"].weekday())
@@ -809,23 +890,23 @@ async def export_month(month: str):
     })
     lesson_ids, att = ({}, {})
     if mondays:
-        lesson_ids, att = await load_span(mondays[0], mondays[-1] + timedelta(days=7))
+        lesson_ids, att = await load_span(mondays[0], mondays[-1] + timedelta(days=7), gid(request))
     first = min(start, mondays[0]) if mondays else start
     until = max(end, mondays[-1] + timedelta(days=7)) if mondays else end
-    notes = await load_notes(first, until)
+    notes = await load_notes(first, until, gid(request))
     wb = build_month_workbook(
-        await active_students(), mondays, lesson_ids, att, await month_stats(month), month, notes
+        await active_students(gid(request)), mondays, lesson_ids, att, await month_stats(month, gid(request)), month, notes
     )
     return xlsx_response(wb, f"davomat-{month}.xlsx")
 
 
 @app.get("/api/export/week", dependencies=[Depends(admin)])
-async def export_week(day: date):
+async def export_week(day: date, request: Request):
     """Haftalik hisobot: berilgan sana qaysi haftaga tushsa, o'sha haftaning varag'i."""
     monday = day - timedelta(days=day.weekday())
-    lesson_ids, att = await load_span(monday, monday + timedelta(days=7))
-    notes = await load_notes(monday, monday + timedelta(days=7))
-    wb = build_week_workbook(await active_students(), monday, lesson_ids, att, notes)
+    lesson_ids, att = await load_span(monday, monday + timedelta(days=7), gid(request))
+    notes = await load_notes(monday, monday + timedelta(days=7), gid(request))
+    wb = build_week_workbook(await active_students(gid(request)), monday, lesson_ids, att, notes)
     return xlsx_response(wb, f"davomat-{monday:%Y-%m-%d}.xlsx")
 
 
@@ -835,12 +916,12 @@ RISK_LIMIT = int(os.environ.get("RISK_LIMIT", "75"))  # profilda ogohlantirish c
 _code_fails: dict[str, list[float]] = {}               # kodni taxmin qilishdan himoya (IP bo'yicha)
 
 
-async def assign_code(student_id: int) -> str:
+async def assign_code(student_id: int, group_id: int) -> str:
     for _ in range(20):
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(6))
         try:
             await app.state.pool.execute(
-                "UPDATE students SET access_code = $1 WHERE id = $2", code, student_id
+                "UPDATE students SET access_code = $1 WHERE id = $2 AND group_id=$3", code, student_id, group_id
             )
             return code
         except asyncpg.UniqueViolationError:
@@ -849,26 +930,26 @@ async def assign_code(student_id: int) -> str:
 
 
 @app.get("/api/students/codes", dependencies=[Depends(admin)])
-async def student_codes():
+async def student_codes(request: Request):
     """Talabalar ro'yxati shaxsiy kodlari bilan (kodi yo'qlarga shu yerda yaratib beriladi)."""
     rows = await app.state.pool.fetch(
-        "SELECT id, full_name, access_code FROM students WHERE active ORDER BY sort_order, full_name"
+        "SELECT id, full_name, access_code FROM students WHERE active AND group_id=$1 ORDER BY sort_order, full_name", gid(request)
     )
     out = []
     for r in rows:
-        code = r["access_code"] or await assign_code(r["id"])
+        code = r["access_code"] or await assign_code(r["id"], gid(request))
         out.append({"id": r["id"], "full_name": r["full_name"], "code": code})
     return out
 
 
 @app.post("/api/students/{student_id}/code", dependencies=[Depends(admin)])
-async def new_student_code(student_id: int):
+async def new_student_code(student_id: int, request: Request):
     found = await app.state.pool.fetchval(
-        "SELECT 1 FROM students WHERE id = $1 AND active", student_id
+        "SELECT 1 FROM students WHERE id = $1 AND active AND group_id=$2", student_id, gid(request)
     )
     if not found:
         raise HTTPException(404, "Talaba topilmadi")
-    return {"code": await assign_code(student_id)}
+    return {"code": await assign_code(student_id, gid(request))}
 
 
 @app.get("/api/me")
@@ -890,8 +971,8 @@ async def my_profile(request: Request, x_student_code: str = Header(default=""))
     rows = await app.state.pool.fetch(
         "SELECT l.lesson_date, l.pair_no, l.subject, a.status, a.note "
         "FROM attendance a JOIN lessons l ON l.id = a.lesson_id "
-        "WHERE a.student_id = $1 ORDER BY l.lesson_date DESC, l.pair_no",
-        student["id"],
+        "WHERE a.student_id = $1 AND l.group_id=$2 ORDER BY l.lesson_date DESC, l.pair_no",
+        student["id"], gid(request),
     )
     return {
         "name": student["full_name"],
@@ -923,13 +1004,13 @@ def check_schedule(body: ScheduleIn):
 
 
 @app.get("/api/schedule")
-async def get_schedule():
+async def get_schedule(request: Request):
     rows = await app.state.pool.fetch(
         "SELECT id, weekday, pair_no, "
         "to_char(start_time, 'HH24:MI') AS start_time, "
         "to_char(end_time, 'HH24:MI') AS end_time, "
         "subject, room, teacher "
-        "FROM schedule ORDER BY weekday, pair_no, start_time"
+        "FROM schedule WHERE group_id=$1 ORDER BY weekday, pair_no, start_time", gid(request)
     )
     return [dict(r) for r in rows]
 
@@ -938,10 +1019,10 @@ async def get_schedule():
 async def add_schedule(body: ScheduleIn, request: Request):
     check_schedule(body)
     row = await app.state.pool.fetchrow(
-        "INSERT INTO schedule (weekday, pair_no, start_time, end_time, subject, room, teacher) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        "INSERT INTO schedule (weekday, pair_no, start_time, end_time, subject, room, teacher, group_id) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
         body.weekday, body.pair_no, body.start_time, body.end_time,
-        body.subject.strip(), body.room.strip(), body.teacher.strip(),
+        body.subject.strip(), body.room.strip(), body.teacher.strip(), gid(request),
     )
     await audit(request, "schedule_create", "schedule", row["id"], f"weekday={body.weekday} pair={body.pair_no}")
     return {"id": row["id"]}
@@ -952,9 +1033,9 @@ async def update_schedule(item_id: int, body: ScheduleIn, request: Request):
     check_schedule(body)
     res = await app.state.pool.execute(
         "UPDATE schedule SET weekday=$1, pair_no=$2, start_time=$3, end_time=$4, "
-        "subject=$5, room=$6, teacher=$7 WHERE id=$8",
+        "subject=$5, room=$6, teacher=$7 WHERE id=$8 AND group_id=$9",
         body.weekday, body.pair_no, body.start_time, body.end_time,
-        body.subject.strip(), body.room.strip(), body.teacher.strip(), item_id,
+        body.subject.strip(), body.room.strip(), body.teacher.strip(), item_id, gid(request),
     )
     if res == "UPDATE 0":
         raise HTTPException(404, "Topilmadi")
@@ -964,7 +1045,7 @@ async def update_schedule(item_id: int, body: ScheduleIn, request: Request):
 
 @app.delete("/api/schedule/{item_id}", dependencies=[Depends(admin)])
 async def delete_schedule(item_id: int, request: Request):
-    await app.state.pool.execute("DELETE FROM schedule WHERE id=$1", item_id)
+    await app.state.pool.execute("DELETE FROM schedule WHERE id=$1 AND group_id=$2", item_id, gid(request))
     await audit(request, "schedule_delete", "schedule", item_id)
     return {"ok": True}
 
@@ -998,19 +1079,30 @@ SAFE_UPLOAD_MIMES = {
 _fails: dict[str, list[float]] = {}   # guruh kodini taxmin qilishdan himoya (IP bo'yicha)
 
 
-def member(
+async def member(
     request: Request,
     x_group_code: str = Header(default=""),
     cspu_session: str = Cookie(default=""),
+    cspu_group_session: str = Cookie(default=""),
 ):
     """Starosta (admin paroli) yoki guruh kodi bilan kirgan talaba."""
     if session_token(request, cspu_session) == ADMIN_TOKEN:
+        request.state.group_id = DEFAULT_GROUP_ID
+        return "admin"
+    group_session = group_session_id(cspu_group_session)
+    if group_session:
+        request.state.group_id = group_session
         return "admin"
     ip, now = client_ip(request), pytime.time()
     recent = [t for t in _fails.get(ip, []) if now - t < 300]
     if len(recent) >= 10:
         raise HTTPException(429, "Juda ko'p urinish. 5 daqiqadan keyin qayta urinib ko'ring")
-    if GROUP_CODE and x_group_code and secrets.compare_digest(x_group_code.encode(), GROUP_CODE.encode()):
+    code_row = await app.state.pool.fetchrow(
+        "SELECT group_id FROM group_access_codes WHERE code_hash=$1 AND active",
+        hash_access_code(x_group_code),
+    ) if x_group_code else None
+    if code_row or (GROUP_CODE and x_group_code and secrets.compare_digest(x_group_code.encode(), GROUP_CODE.encode())):
+        request.state.group_id = code_row["group_id"] if code_row else DEFAULT_GROUP_ID
         return "member"
     _fails[ip] = recent + [now]
     raise HTTPException(401, "Guruh kodi noto'g'ri")
@@ -1166,21 +1258,21 @@ class CategoryIn(BaseModel):
 
 
 @app.get("/api/categories", dependencies=[Depends(member)])
-async def list_categories():
-    rows = await app.state.pool.fetch("SELECT id, name FROM categories ORDER BY sort_order, name")
+async def list_categories(request: Request):
+    rows = await app.state.pool.fetch("SELECT id, name FROM categories WHERE group_id=$1 ORDER BY sort_order, name", gid(request))
     return [dict(r) for r in rows]
 
 
 @app.post("/api/categories", dependencies=[Depends(admin)])
-async def add_category(body: CategoryIn):
+async def add_category(body: CategoryIn, request: Request):
     name = body.name.strip()[:60]
     if not name:
         raise HTTPException(400, "Kategoriya nomini yozing")
     try:
         row = await app.state.pool.fetchrow(
-            "INSERT INTO categories (name, sort_order) "
-            "VALUES ($1, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories)) RETURNING id, name",
-            name,
+            "INSERT INTO categories (name, sort_order, group_id) "
+            "VALUES ($1, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories WHERE group_id=$2), $2) RETURNING id, name",
+            name, gid(request),
         )
     except asyncpg.UniqueViolationError:
         raise HTTPException(409, "Bunday kategoriya allaqachon bor")
@@ -1188,28 +1280,30 @@ async def add_category(body: CategoryIn):
 
 
 @app.delete("/api/categories/{cid}", dependencies=[Depends(admin)])
-async def delete_category(cid: int):
+async def delete_category(cid: int, request: Request):
     # hujjatlar o'chmaydi, faqat "kategoriyasiz" bo'lib qoladi (FK: ON DELETE SET NULL)
-    await app.state.pool.execute("DELETE FROM categories WHERE id = $1", cid)
+    await app.state.pool.execute("DELETE FROM categories WHERE id = $1 AND group_id=$2", cid, gid(request))
     return {"ok": True}
 
 
 # --- hujjatlar ---
 @app.get("/api/documents", dependencies=[Depends(member)])
-async def list_documents():
+async def list_documents(request: Request):
     rows = await app.state.pool.fetch(
         "SELECT d.id, d.title, d.category_id, c.name AS category, d.tags, d.note, d.kind, "
         "CASE WHEN d.kind = 'link' THEN d.url END AS url, "
         "d.file_name, d.mime, d.size, d.pinned, d.created_at "
         "FROM documents d LEFT JOIN categories c ON c.id = d.category_id "
+        "WHERE d.group_id=$1 "
         "ORDER BY d.pinned DESC, d.created_at DESC"
+        , gid(request)
     )
     return [dict(r) for r in rows]
 
 
 @app.get("/api/documents/{doc_id}/open", dependencies=[Depends(member)])
-async def open_document(doc_id: int):
-    row = await app.state.pool.fetchrow("SELECT kind, url, storage_path FROM documents WHERE id = $1", doc_id)
+async def open_document(doc_id: int, request: Request):
+    row = await app.state.pool.fetchrow("SELECT kind, url, storage_path FROM documents WHERE id = $1 AND group_id=$2", doc_id, gid(request))
     if not row:
         raise HTTPException(404, "Hujjat topilmadi")
     if row["kind"] == "link":
@@ -1219,6 +1313,7 @@ async def open_document(doc_id: int):
 
 @app.post("/api/documents", dependencies=[Depends(admin)])
 async def create_document(
+    request: Request,
     title: str = Form(...),
     category_id: str = Form(""),
     tags: str = Form(""),
@@ -1233,6 +1328,11 @@ async def create_document(
     link = link.strip()
     if has_file == bool(link):
         raise HTTPException(400, "Fayl yoki havoladan faqat bittasini kiriting")
+    category_id_value = to_category(category_id)
+    if category_id_value and not await app.state.pool.fetchval(
+        "SELECT 1 FROM categories WHERE id=$1 AND group_id=$2", category_id_value, gid(request)
+    ):
+        raise HTTPException(400, "Kategoriya ushbu guruhga tegishli emas")
 
     kind, url, path, fname, mime, size = "link", None, None, None, None, None
     if link:
@@ -1243,10 +1343,10 @@ async def create_document(
         await storage_upload(path, data, mime)
     try:
         row = await app.state.pool.fetchrow(
-            "INSERT INTO documents (title, category_id, tags, note, kind, url, storage_path, file_name, mime, size) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
-            title, to_category(category_id), clean_tags(tags.split(",")), note.strip()[:1000],
-            kind, url, path, fname, mime, size,
+            "INSERT INTO documents (title, category_id, tags, note, kind, url, storage_path, file_name, mime, size, group_id) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
+            title, category_id_value, clean_tags(tags.split(",")), note.strip()[:1000],
+            kind, url, path, fname, mime, size, gid(request),
         )
     except asyncpg.ForeignKeyViolationError:
         if path:
@@ -1265,18 +1365,22 @@ class DocUpdate(BaseModel):
 
 
 @app.put("/api/documents/{doc_id}", dependencies=[Depends(admin)])
-async def update_document(doc_id: int, body: DocUpdate):
+async def update_document(doc_id: int, body: DocUpdate, request: Request):
     title = body.title.strip()[:200]
     if not title:
         raise HTTPException(400, "Hujjat nomini yozing")
-    row = await app.state.pool.fetchrow("SELECT kind, url FROM documents WHERE id = $1", doc_id)
+    if body.category_id and not await app.state.pool.fetchval(
+        "SELECT 1 FROM categories WHERE id=$1 AND group_id=$2", body.category_id, gid(request)
+    ):
+        raise HTTPException(400, "Kategoriya ushbu guruhga tegishli emas")
+    row = await app.state.pool.fetchrow("SELECT kind, url FROM documents WHERE id = $1 AND group_id=$2", doc_id, gid(request))
     if not row:
         raise HTTPException(404, "Hujjat topilmadi")
     url = check_url(body.url) if row["kind"] == "link" and body.url else row["url"]
     try:
         await app.state.pool.execute(
-            "UPDATE documents SET title=$1, category_id=$2, tags=$3, note=$4, pinned=$5, url=$6 WHERE id=$7",
-            title, body.category_id, clean_tags(body.tags), body.note.strip()[:1000], body.pinned, url, doc_id,
+            "UPDATE documents SET title=$1, category_id=$2, tags=$3, note=$4, pinned=$5, url=$6 WHERE id=$7 AND group_id=$8",
+            title, body.category_id, clean_tags(body.tags), body.note.strip()[:1000], body.pinned, url, doc_id, gid(request),
         )
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(400, "Kategoriya topilmadi")
@@ -1284,8 +1388,8 @@ async def update_document(doc_id: int, body: DocUpdate):
 
 
 @app.post("/api/documents/{doc_id}/file", dependencies=[Depends(admin)])
-async def replace_file(doc_id: int, file: UploadFile = File(...)):
-    row = await app.state.pool.fetchrow("SELECT kind, storage_path FROM documents WHERE id = $1", doc_id)
+async def replace_file(request: Request, doc_id: int, file: UploadFile = File(...)):
+    row = await app.state.pool.fetchrow("SELECT kind, storage_path FROM documents WHERE id = $1 AND group_id=$2", doc_id, gid(request))
     if not row:
         raise HTTPException(404, "Hujjat topilmadi")
     if row["kind"] != "file":
@@ -1293,16 +1397,16 @@ async def replace_file(doc_id: int, file: UploadFile = File(...)):
     data, fname, mime, path = await read_upload(file)
     await storage_upload(path, data, mime)
     await app.state.pool.execute(
-        "UPDATE documents SET storage_path=$1, file_name=$2, mime=$3, size=$4 WHERE id=$5",
-        path, fname, mime, len(data), doc_id,
+        "UPDATE documents SET storage_path=$1, file_name=$2, mime=$3, size=$4 WHERE id=$5 AND group_id=$6",
+        path, fname, mime, len(data), doc_id, gid(request),
     )
     await storage_delete(row["storage_path"])
     return {"ok": True}
 
 
 @app.delete("/api/documents/{doc_id}", dependencies=[Depends(admin)])
-async def delete_document(doc_id: int):
-    row = await app.state.pool.fetchrow("DELETE FROM documents WHERE id = $1 RETURNING storage_path", doc_id)
+async def delete_document(doc_id: int, request: Request):
+    row = await app.state.pool.fetchrow("DELETE FROM documents WHERE id = $1 AND group_id=$2 RETURNING storage_path", doc_id, gid(request))
     if row and row["storage_path"]:
         await storage_delete(row["storage_path"])
     return {"ok": True}

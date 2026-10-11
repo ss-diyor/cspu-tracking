@@ -110,20 +110,19 @@
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; }
   .today-widget { margin-bottom: 14px; }
   .landing { width: 100%; max-width: 960px; margin: 0 auto; padding: 54px 28px 42px; }
-  .landing-hero { display: grid; grid-template-columns: 1.2fr .8fr; gap: 44px; align-items: center; padding: 24px 0 52px; border-bottom: 1px solid var(--line); }
+  .landing-hero { display: grid; grid-template-columns: 1fr; gap: 44px; align-items: center; padding: 24px 0 52px; border-bottom: 1px solid var(--line); }
   .landing-kicker { margin: 0 0 14px; color: var(--accent); font-size: .78rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
   .landing h1 { max-width: 620px; font-size: clamp(2.4rem, 7vw, 4.8rem); line-height: .98; letter-spacing: -.055em; margin: 0 0 20px; }
   .landing-lead { max-width: 530px; margin: 0 0 26px; color: var(--muted); font-size: 1.08rem; }
   .landing-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .landing-actions button { border-color: var(--ink); background: var(--ink); color: var(--bg); font-weight: 600; border-radius: 7px; }
   .landing-actions button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
-  .landing-mark { display: grid; place-items: center; justify-self: end; width: clamp(150px, 22vw, 230px); aspect-ratio: 1; border: 1px solid var(--line); border-radius: 50%; color: var(--accent); font-size: clamp(5rem, 12vw, 9rem); font-weight: 700; letter-spacing: -.1em; line-height: 1; }
   .landing-features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 28px; }
   .landing-feature { min-height: 112px; padding: 8px 22px 8px 0; }
   .landing-feature + .landing-feature { padding-left: 22px; border-left: 1px solid var(--line); }
   .landing-feature b { display: block; margin-bottom: 4px; }
   .landing-footer { margin: 34px 0 0; text-align: center; }
-  @media (max-width: 680px) { .landing { padding: 28px 18px 32px; } .landing-hero { grid-template-columns: 1fr; gap: 30px; padding: 18px 0 38px; } .landing-mark { justify-self: start; width: 126px; } .landing-features { grid-template-columns: 1fr; gap: 0; } .landing-feature, .landing-feature + .landing-feature { min-height: auto; padding: 15px 0; border-left: 0; border-top: 1px solid var(--line); } }
+  @media (max-width: 680px) { .landing { padding: 28px 18px 32px; } .landing-hero { gap: 30px; padding: 18px 0 38px; } .landing-features { grid-template-columns: 1fr; gap: 0; } .landing-feature, .landing-feature + .landing-feature { min-height: auto; padding: 15px 0; border-left: 0; border-top: 1px solid var(--line); } }
   .today-widget h2 { margin: 0 0 6px; }
   .today-list { display: grid; gap: 6px; }
   .today-item { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding: 7px 0; }
@@ -175,7 +174,6 @@
         <button id="landingStudent" class="secondary" type="button">Talaba profilini ko‘rish</button>
       </div>
     </div>
-    <div class="landing-mark" aria-label="Davomat platformasi">D</div>
   </div>
   <div class="landing-features">
     <div class="landing-feature"><b>Davomat</b><span class="muted">Har bir dars bo‘yicha davomatni tez belgilang.</span></div>

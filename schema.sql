@@ -83,3 +83,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log (created_at DESC);
+
+-- Ko'p guruhli platforma: guruhlar va sardorlar uchun bekor qilinadigan kirish kodlari
+CREATE TABLE IF NOT EXISTS groups (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    slug       TEXT NOT NULL UNIQUE,
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS group_access_codes (
+    id         BIGSERIAL PRIMARY KEY,
+    group_id   INT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    label      TEXT NOT NULL DEFAULT '',
+    code_hash  TEXT NOT NULL UNIQUE,
+    code_hint  TEXT NOT NULL,
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_group_access_codes_group ON group_access_codes (group_id, active);

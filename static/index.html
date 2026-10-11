@@ -162,6 +162,7 @@
     <button data-tab="doc">Hujjatlar</button>
     <button data-tab="me" class="student-only">Profil</button>
     <button data-tab="stu" class="admin-only hidden">Talabalar</button>
+    <button data-tab="platform" class="admin-only hidden">Platforma</button>
   </nav>
 
   <!-- DAVOMAT -->
@@ -378,6 +379,19 @@
     <div class="muted" style="margin-bottom:8px">Har bir talabaga o'z kodini alohida yuboring. 📋 tayyor xabarni nusxalaydi, ↻ yangi kod yaratadi (eskisi ishlamay qoladi).</div>
     <div class="card" id="stuList"></div>
   </section>
+
+  <!-- PLATFORMA ADMINI -->
+  <section id="tab-platform" class="hidden">
+    <div class="card">
+      <h2 style="margin-top:0">Guruh yaratish</h2>
+      <div class="row"><input id="groupName" placeholder="Guruh nomi, masalan AT-21/3"></div>
+      <div class="row"><input id="groupSlug" placeholder="Slug (ixtiyoriy), masalan at-21-3"></div>
+      <button class="primary" id="createGroup">Guruhni yaratish</button>
+    </div>
+    <h2>Guruhlar va sardor kodlari</h2>
+    <div class="muted" style="margin-bottom:8px">Kod faqat yaratilgan paytda bir marta ko‘rsatiladi. Uni sardorga xavfsiz kanal orqali yuboring.</div>
+    <div id="platformGroups"></div>
+  </section>
 </main>
 
 <footer class="contact">
@@ -451,17 +465,59 @@ $("#loginBtn").onclick = async () => {
 // Tablar
 function showTab(name) {
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.tab === name));
-  ["att", "stats", "sch", "doc", "me", "stu"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+  ["att", "stats", "sch", "doc", "me", "stu", "platform"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
   if (name === "att") loadLessons();
   if (name === "stats") refreshStats();
   if (name === "sch") loadSchedule();
   if (name === "doc") openDocs();
   if (name === "me") loadMe();
   if (name === "stu") loadStudents();
+  if (name === "platform") loadPlatform();
 }
 $("#tabs").onclick = e => {
   const b = e.target.closest("button[data-tab]");
   if (b) showTab(b.dataset.tab);
+};
+
+async function loadPlatform() {
+  try {
+    const groups = await api("/api/platform/groups");
+    $("#platformGroups").innerHTML = groups.length ? groups.map(g => `<div class="card" style="margin-bottom:10px">
+      <div class="row" style="align-items:center"><div style="flex:1"><b>${esc(g.name)}</b><div class="muted">${esc(g.slug)} · faol kodlar: ${g.active_codes}</div></div>
+      <button class="primary sm" data-new-code="${g.id}">Sardor kodi yaratish</button></div>
+      <div id="codes-${g.id}" class="muted" style="margin-top:8px">Kodlar yuklanmoqda...</div>
+    </div>`).join("") : '<div class="card muted">Hali guruhlar yo‘q.</div>';
+    for (const g of groups) await loadGroupCodes(g.id);
+  } catch (e) { $("#platformGroups").innerHTML = `<div class="card warn">${esc(e.message)}</div>`; }
+}
+async function loadGroupCodes(groupId) {
+  const box = $("#codes-" + groupId); if (!box) return;
+  const codes = await api(`/api/platform/groups/${groupId}/codes`);
+  box.innerHTML = codes.length ? codes.map(c => `<div class="row" style="border-top:1px solid var(--line);padding:6px 0">
+    <span style="flex:1">${esc(c.label || "Sardor kodi")} · <code>••••${esc(c.code_hint)}</code> · ${c.active ? "faol" : "bekor qilingan"}</span>
+    ${c.active ? `<button class="sm" data-revoke-code="${c.id}">Bekor qilish</button>` : ""}</div>`).join("") : "Faol kodlar yo‘q.";
+}
+$("#createGroup").onclick = async () => {
+  const name = $("#groupName").value.trim(); if (!name) return toast("Guruh nomini kiriting");
+  try { await api("/api/platform/groups", { method: "POST", body: JSON.stringify({ name, slug: $("#groupSlug").value.trim() }) });
+    $("#groupName").value = ""; $("#groupSlug").value = ""; toast("Guruh yaratildi"); loadPlatform();
+  } catch (e) { toast(e.message); }
+};
+$("#platformGroups").onclick = async e => {
+  const create = e.target.closest("[data-new-code]");
+  const revoke = e.target.closest("[data-revoke-code]");
+  try {
+    if (create) {
+      const label = prompt("Kod kim uchun? (ixtiyoriy)", "Guruh sardori") || "Guruh sardori";
+      const result = await api(`/api/platform/groups/${create.dataset.newCode}/codes`, { method: "POST", body: JSON.stringify({ label }) });
+      const text = `Kirish kodi: ${result.code}`;
+      if (navigator.clipboard) await navigator.clipboard.writeText(result.code).catch(() => {});
+      alert(text + "\n\nKod clipboard'ga nusxalandi. Bu kod faqat hozir ko‘rsatildi."); loadPlatform();
+    } else if (revoke) {
+      if (!confirm("Bu kodni bekor qilasizmi?")) return;
+      await api(`/api/platform/codes/${revoke.dataset.revokeCode}`, { method: "DELETE" }); loadPlatform();
+    }
+  } catch (e) { toast(e.message); }
 };
 async function loadTodayWidget() {
   try {

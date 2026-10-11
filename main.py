@@ -1,4 +1,5 @@
 import io
+import hashlib
 import logging
 import mimetypes
 import os
@@ -81,6 +82,23 @@ async def lifespan(app: FastAPI):
         )"""
     )
     await app.state.pool.execute("CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log (created_at DESC)")
+    await app.state.pool.execute(
+        """CREATE TABLE IF NOT EXISTS groups (
+            id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, slug TEXT NOT NULL UNIQUE,
+            active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )"""
+    )
+    await app.state.pool.execute(
+        """CREATE TABLE IF NOT EXISTS group_access_codes (
+            id BIGSERIAL PRIMARY KEY, group_id INT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+            label TEXT NOT NULL DEFAULT '', code_hash TEXT NOT NULL UNIQUE, code_hint TEXT NOT NULL,
+            active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), revoked_at TIMESTAMPTZ
+        )"""
+    )
+    await app.state.pool.execute("CREATE INDEX IF NOT EXISTS idx_group_access_codes_group ON group_access_codes (group_id, active)")
+    await app.state.pool.execute(
+        "INSERT INTO groups (name, slug) VALUES ('XTA-26/5', 'xta-26-5') ON CONFLICT (slug) DO NOTHING"
+    )
     app.state.http = httpx.AsyncClient(timeout=60)
     if SUPABASE_URL:
         log.info("Supabase Storage manzili: %s", SUPABASE_URL)
@@ -139,6 +157,30 @@ class LoginIn(BaseModel):
     password: str
 
 
+class GroupIn(BaseModel):
+    name: str
+    slug: str = ""
+
+
+class AccessCodeIn(BaseModel):
+    label: str = ""
+
+
+def safe_slug(raw: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+    return slug[:80] or secrets.token_hex(4)
+
+
+def new_access_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    raw = "".join(secrets.choice(alphabet) for _ in range(12))
+    return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
+
+
+def hash_access_code(code: str) -> str:
+    return hashlib.sha256(code.strip().upper().encode()).hexdigest()
+
+
 @app.post("/api/auth/login")
 async def login(body: LoginIn, request: Request, response: Response):
     ip = client_ip(request)
@@ -179,6 +221,66 @@ async def audit_log(limit: int = 100):
         "FROM audit_log ORDER BY created_at DESC LIMIT $1", limit
     )
     return [dict(r) for r in rows]
+
+@app.get("/api/platform/groups", dependencies=[Depends(admin)])
+async def platform_groups():
+    rows = await app.state.pool.fetch(
+        "SELECT g.id, g.name, g.slug, g.active, g.created_at, "
+        "COUNT(c.id) FILTER (WHERE c.active) AS active_codes "
+        "FROM groups g LEFT JOIN group_access_codes c ON c.group_id = g.id "
+        "GROUP BY g.id ORDER BY g.name"
+    )
+    return [dict(r) for r in rows]
+
+@app.post("/api/platform/groups", dependencies=[Depends(admin)])
+async def create_platform_group(body: GroupIn, request: Request):
+    name = body.name.strip()[:120]
+    if not name:
+        raise HTTPException(400, "Guruh nomini kiriting")
+    slug = safe_slug(body.slug or name)
+    try:
+        row = await app.state.pool.fetchrow(
+            "INSERT INTO groups (name, slug) VALUES ($1, $2) RETURNING id, name, slug, active, created_at",
+            name, slug,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(409, "Bu guruh yoki slug allaqachon mavjud")
+    await audit(request, "group_create", "group", row["id"], name)
+    return dict(row)
+
+@app.get("/api/platform/groups/{group_id}/codes", dependencies=[Depends(admin)])
+async def list_group_codes(group_id: int):
+    rows = await app.state.pool.fetch(
+        "SELECT id, label, code_hint, active, created_at, revoked_at "
+        "FROM group_access_codes WHERE group_id=$1 ORDER BY created_at DESC", group_id
+    )
+    return [dict(r) for r in rows]
+
+@app.post("/api/platform/groups/{group_id}/codes", dependencies=[Depends(admin)])
+async def create_group_code(group_id: int, body: AccessCodeIn, request: Request):
+    if not await app.state.pool.fetchval("SELECT 1 FROM groups WHERE id=$1 AND active", group_id):
+        raise HTTPException(404, "Guruh topilmadi")
+    code = new_access_code()
+    row = await app.state.pool.fetchrow(
+        "INSERT INTO group_access_codes (group_id, label, code_hash, code_hint) "
+        "VALUES ($1, $2, $3, $4) RETURNING id, label, code_hint, active, created_at",
+        group_id, body.label.strip()[:120], hash_access_code(code), code[-4:]
+    )
+    await audit(request, "group_code_create", "group", group_id, f"code_id={row['id']} label={body.label.strip()[:120]}")
+    result = dict(row)
+    result["code"] = code
+    return result
+
+@app.delete("/api/platform/codes/{code_id}", dependencies=[Depends(admin)])
+async def revoke_group_code(code_id: int, request: Request):
+    row = await app.state.pool.fetchrow(
+        "UPDATE group_access_codes SET active=FALSE, revoked_at=now() "
+        "WHERE id=$1 AND active RETURNING group_id", code_id
+    )
+    if not row:
+        raise HTTPException(404, "Faol kod topilmadi")
+    await audit(request, "group_code_revoke", "group", row["group_id"], f"code_id={code_id}")
+    return {"ok": True}
 
 
 def month_range(month: str) -> tuple[date, date]:

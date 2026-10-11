@@ -116,7 +116,7 @@
   .landing-lead { max-width: 530px; margin: 0 0 26px; color: var(--muted); font-size: 1.08rem; }
   .landing-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .landing-actions button { border-color: var(--ink); background: var(--ink); color: var(--bg); font-weight: 600; border-radius: 7px; }
-  .landing-actions button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
+  .landing-actions button.secondary { background: #fff; color: #14212b; border-color: #fff; }
   .landing-login { max-width: 520px; padding: 24px 0 16px; }
   .landing-login h1 { font-size: clamp(2rem, 5vw, 3.4rem); }
   .landing-login .row { margin-top: 18px; }
@@ -173,9 +173,8 @@
       <h1>Davomat platformasi</h1>
       <p class="landing-lead">Davomat, dars jadvali va guruh statistikalarini bir joyda qulay boshqaring.</p>
       <div class="landing-actions">
-        <button id="landingLogin" type="button">Admin paneli</button>
         <button id="landingCaptain" class="secondary" type="button">Guruh sardori</button>
-        <button id="landingStudent" class="secondary" type="button">Talaba profilini ko‘rish</button>
+        <button id="landingStudent" class="secondary" type="button">Talaba profili</button>
       </div>
     </div>
   </div>
@@ -558,7 +557,6 @@ async function handleLogin() {
   else { toast("Parol yoki guruh kodi noto'g'ri"); showLanding(); }
 }
 $("#loginBtn").onclick = handleLogin;
-$("#landingLogin").onclick = () => { window.location.href = "/admin"; };
 $("#landingCaptain").onclick = () => { window.location.href = "/captain"; };
 $("#roleLoginSubmit").onclick = submitRoleLogin;
 $("#roleCode").onkeydown = e => { if (e.key === "Enter") submitRoleLogin(); };

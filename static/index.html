@@ -117,6 +117,9 @@
   .landing-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .landing-actions button { border-color: var(--ink); background: var(--ink); color: var(--bg); font-weight: 600; border-radius: 7px; }
   .landing-actions button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
+  .landing-login { max-width: 520px; padding: 24px 0 16px; }
+  .landing-login h1 { font-size: clamp(2rem, 5vw, 3.4rem); }
+  .landing-login .row { margin-top: 18px; }
   .landing-features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 28px; }
   .landing-feature { min-height: 112px; padding: 8px 22px 8px 0; }
   .landing-feature + .landing-feature { padding-left: 22px; border-left: 1px solid var(--line); }
@@ -170,7 +173,8 @@
       <h1>Davomat platformasi</h1>
       <p class="landing-lead">Davomat, dars jadvali va guruh statistikalarini bir joyda qulay boshqaring.</p>
       <div class="landing-actions">
-        <button id="landingLogin" type="button">Platformaga kirish</button>
+        <button id="landingLogin" type="button">Admin paneli</button>
+        <button id="landingCaptain" class="secondary" type="button">Guruh sardori</button>
         <button id="landingStudent" class="secondary" type="button">Talaba profilini ko‘rish</button>
       </div>
     </div>
@@ -181,6 +185,18 @@
     <div class="landing-feature"><b>Jadval</b><span class="muted">Haftalik darslar, vaqt va xonalarni bir joyda ko‘ring.</span></div>
   </div>
   <p class="landing-footer muted">Guruh sardori bo‘lsangiz, sizga berilgan kirish kodi orqali kiring.</p>
+</section>
+<section id="roleLogin" class="landing hidden">
+  <div class="landing-login">
+    <p class="landing-kicker" id="roleKicker">Platforma boshqaruvi</p>
+    <h1 id="roleTitle">Admin paneli</h1>
+    <p class="landing-lead" id="roleText">Platformani boshqarish uchun admin parolini kiriting.</p>
+    <div class="row">
+      <input id="roleCode" type="password" autocomplete="current-password" placeholder="Kirish ma’lumotini kiriting">
+      <button id="roleLoginSubmit" class="primary" type="button" style="flex:0 0 auto">Kirish</button>
+    </div>
+    <button id="roleBack" class="sm" type="button">Bosh sahifaga qaytish</button>
+  </div>
 </section>
 <div id="appShell" class="hidden">
 <header>
@@ -444,8 +460,19 @@
 <script>
 const LABEL = { present: "Bor", late: "Kechikdi", excused: "Sababli", unexcused: "Sababsiz" };
 const $ = s => document.querySelector(s);
-function showApp() { document.title = "Davomat platformasi"; $("#landing").classList.add("hidden"); $("#appShell").classList.remove("hidden"); }
-function showLanding() { document.title = "Davomat platformasi"; $("#appShell").classList.add("hidden"); $("#landing").classList.remove("hidden"); }
+function showApp() { document.title = "Davomat platformasi"; $("#landing").classList.add("hidden"); $("#roleLogin").classList.add("hidden"); $("#appShell").classList.remove("hidden"); }
+function showLanding() { document.title = "Davomat platformasi"; $("#appShell").classList.add("hidden"); $("#roleLogin").classList.add("hidden"); $("#landing").classList.remove("hidden"); }
+function showRoleLogin(role) {
+  const adminRole = role === "admin";
+  document.title = adminRole ? "Admin paneli" : "Guruh sardori";
+  $("#appShell").classList.add("hidden"); $("#landing").classList.add("hidden"); $("#roleLogin").classList.remove("hidden");
+  $("#roleKicker").textContent = adminRole ? "Platforma boshqaruvi" : "Guruh boshqaruvi";
+  $("#roleTitle").textContent = adminRole ? "Admin paneli" : "Guruh sardori paneli";
+  $("#roleText").textContent = adminRole ? "Platformani boshqarish uchun admin parolini kiriting." : "O‘z guruhingiz davomatini boshqarish uchun guruh kodini kiriting.";
+  $("#roleCode").placeholder = adminRole ? "Admin paroli" : "Guruh sardori kodi";
+  $("#roleCode").value = "";
+  $("#roleCode").focus();
+}
 let token = ""; // Admin autentifikatsiyasi HttpOnly cookie orqali amalga oshadi.
 let studentCode = localStorage.getItem("studentCode") || "";
 let isAdmin = false;
@@ -506,6 +533,19 @@ async function checkToken(t) {
   const r = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: t }) });
   return r.ok;
 }
+async function submitRoleLogin() {
+  const role = window.location.pathname === "/admin" ? "admin" : "captain";
+  const value = $("#roleCode").value.trim();
+  if (!value) return toast(role === "admin" ? "Admin parolini kiriting" : "Guruh kodini kiriting");
+  if (role === "admin") {
+    if (await checkToken(value)) { showApp(); setAdmin(true, true); scheduleLoaded = false; schedule = []; await loadTodayWidget(); showTab("att"); refreshDocsIfOpen(); }
+    else toast("Admin paroli noto‘g‘ri");
+    return;
+  }
+  const response = await fetch("/api/auth/group-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: value }) });
+  if (response.ok) { const info = await response.json(); showApp(); setAdmin(true, false, info.group || ""); scheduleLoaded = false; schedule = []; await loadTodayWidget(); showTab("att"); refreshDocsIfOpen(); }
+  else toast("Guruh kodi noto‘g‘ri");
+}
 
 async function handleLogin() {
   if (isAdmin) { await fetch("/api/auth/logout", { method: "POST" }); token = ""; showLanding(); setAdmin(false); scheduleLoaded = false; schedule = []; wipeAdminData(); refreshDocsIfOpen(); return; }
@@ -518,7 +558,11 @@ async function handleLogin() {
   else { toast("Parol yoki guruh kodi noto'g'ri"); showLanding(); }
 }
 $("#loginBtn").onclick = handleLogin;
-$("#landingLogin").onclick = handleLogin;
+$("#landingLogin").onclick = () => { window.location.href = "/admin"; };
+$("#landingCaptain").onclick = () => { window.location.href = "/captain"; };
+$("#roleLoginSubmit").onclick = submitRoleLogin;
+$("#roleCode").onkeydown = e => { if (e.key === "Enter") submitRoleLogin(); };
+$("#roleBack").onclick = () => { window.location.href = "/home"; };
 $("#landingStudent").onclick = () => { window.location.href = "/student"; };
 
 // Tablar
@@ -1323,13 +1367,24 @@ $("#date").onchange = () => { lessonId = null; loadLessons(); };
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 (async () => {
   const studentPage = window.location.pathname === "/student";
+  const adminPage = window.location.pathname === "/admin";
+  const captainPage = window.location.pathname === "/captain";
   try {
     const r = await fetch("/api/auth/session");
-    if (r.ok) { const s = await r.json(); showApp(); setAdmin(true, s.role === "platform", s.group || ""); await loadTodayWidget(); }
+    if (r.ok) {
+      const s = await r.json();
+      if (adminPage && s.role !== "platform") showRoleLogin("admin");
+      else if (captainPage && s.role !== "captain") showRoleLogin("captain");
+      else { showApp(); setAdmin(true, s.role === "platform", s.group || ""); await loadTodayWidget(); }
+    }
     else if (studentPage) { showApp(); setStudentMode(true); setAdmin(false); showTab("me"); }
+    else if (adminPage) showRoleLogin("admin");
+    else if (captainPage) showRoleLogin("captain");
     else { setAdmin(false); showLanding(); }
   } catch {
     if (studentPage) { showApp(); setStudentMode(true); setAdmin(false); showTab("me"); }
+    else if (adminPage) showRoleLogin("admin");
+    else if (captainPage) showRoleLogin("captain");
     else { setAdmin(false); showLanding(); }
   }
 })();

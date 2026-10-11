@@ -247,6 +247,7 @@ async def login(body: LoginIn, request: Request, response: Response):
     _admin_sessions[sid] = pytime.time() + SESSION_TTL
     response.set_cookie("cspu_session", sid, max_age=SESSION_TTL, httponly=True,
                         secure=request.url.scheme == "https", samesite="lax", path="/")
+    response.delete_cookie("cspu_group_session", path="/")
     await audit(request, "login_success", detail="admin session")
     return {"ok": True}
 
@@ -269,6 +270,7 @@ async def group_login(body: GroupCodeLoginIn, request: Request, response: Respon
     _group_sessions[sid] = (row["group_id"], pytime.time() + SESSION_TTL)
     response.set_cookie("cspu_group_session", sid, max_age=SESSION_TTL, httponly=True,
                         secure=request.url.scheme == "https", samesite="lax", path="/")
+    response.delete_cookie("cspu_session", path="/")
     await audit(request, "group_login_success", "group", row["group_id"], f"code_id={row['id']}")
     return {"ok": True, "role": "captain", "group": row["name"]}
 
@@ -1441,6 +1443,16 @@ async def home_page():
 
 @app.get("/student", include_in_schema=False)
 async def student_page():
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html"))
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_page():
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html"))
+
+
+@app.get("/captain", include_in_schema=False)
+async def captain_page():
     return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html"))
 
 

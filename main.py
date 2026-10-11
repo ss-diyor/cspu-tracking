@@ -136,7 +136,16 @@ app = FastAPI(title="Guruh sayti", lifespan=lifespan)
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     if request.url.path.startswith("/api/"):
-        request.state.group_id = group_session_id(request.cookies.get("cspu_group_session")) or DEFAULT_GROUP_ID
+        group_cookie = request.cookies.get("cspu_group_session", "")
+        group_id = group_session_id(group_cookie)
+        platform_session = session_token(request, request.cookies.get("cspu_session", "")) == ADMIN_TOKEN
+        if group_id is None and not platform_session:
+            student_code = request.headers.get("x-student-code", "").strip().upper()
+            if student_code:
+                group_id = await app.state.pool.fetchval(
+                    "SELECT group_id FROM students WHERE active AND access_code=$1", student_code
+                )
+        request.state.group_id = group_id or DEFAULT_GROUP_ID
         ip = client_ip(request)
         bucket = "login" if request.url.path == "/api/auth/login" else "api"
         limits = (5, 300) if bucket == "login" else (120, 60)
@@ -1084,6 +1093,7 @@ async def member(
     x_group_code: str = Header(default=""),
     cspu_session: str = Cookie(default=""),
     cspu_group_session: str = Cookie(default=""),
+    x_student_code: str = Header(default=""),
 ):
     """Starosta (admin paroli) yoki guruh kodi bilan kirgan talaba."""
     if session_token(request, cspu_session) == ADMIN_TOKEN:
@@ -1104,6 +1114,13 @@ async def member(
     if code_row or (GROUP_CODE and x_group_code and secrets.compare_digest(x_group_code.encode(), GROUP_CODE.encode())):
         request.state.group_id = code_row["group_id"] if code_row else DEFAULT_GROUP_ID
         return "member"
+    if x_student_code.strip():
+        student_group = await app.state.pool.fetchval(
+            "SELECT group_id FROM students WHERE active AND access_code=$1", x_student_code.strip().upper()
+        )
+        if student_group:
+            request.state.group_id = student_group
+            return "member"
     _fails[ip] = recent + [now]
     raise HTTPException(401, "Guruh kodi noto'g'ri")
 

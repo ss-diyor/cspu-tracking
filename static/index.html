@@ -450,6 +450,7 @@ let token = ""; // Admin autentifikatsiyasi HttpOnly cookie orqali amalga oshadi
 let studentCode = localStorage.getItem("studentCode") || "";
 let isAdmin = false;
 let isPlatformAdmin = false;
+let studentMode = false;
 let lessonId = null;
 let marks = {};          // student_id -> status
 let notes = {};          // student_id -> "Sababli" sababi
@@ -468,9 +469,16 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+function setStudentMode(on) {
+  studentMode = on;
+  const locked = on && !me;
+  $("#todayWidget").classList.toggle("hidden", locked);
+  ["sch", "doc"].forEach(tab => document.querySelectorAll(`[data-tab="${tab}"]`).forEach(e => e.classList.toggle("hidden", locked)));
+}
 function setAdmin(on, platform = false, groupName = "") {
   isAdmin = on;
   isPlatformAdmin = on && platform;
+  if (on) setStudentMode(false);
   if (on && groupName) $("#brand").textContent = groupName;
   if (!on || platform) $("#brand").textContent = "XTA-26/5";
   if (on && platform) document.title = "XTA-26/5";
@@ -481,7 +489,7 @@ function setAdmin(on, platform = false, groupName = "") {
   $("#loginBtn").textContent = on ? "Log out" : "Log in";
   // faol tab endi ruxsat etilmagan bo'lsa (yoki hech biri tanlanmagan bo'lsa), mosini ochamiz
   const cur = document.querySelector("#tabs button.on");
-  if (!$("#appShell").classList.contains("hidden") && (!cur || cur.classList.contains("hidden"))) showTab(on ? "att" : (studentCode ? "me" : "sch"));
+  if (!$("#appShell").classList.contains("hidden") && (!cur || cur.classList.contains("hidden"))) showTab(on ? "att" : (studentMode ? "me" : (studentCode ? "me" : "sch")));
 }
 
 // Starosta chiqqanda umumiy ma'lumotlar sahifadan ham tozalanadi
@@ -510,7 +518,7 @@ async function handleLogin() {
 }
 $("#loginBtn").onclick = handleLogin;
 $("#landingLogin").onclick = handleLogin;
-$("#landingStudent").onclick = async () => { showApp(); setAdmin(false); showTab("me"); await loadTodayWidget(); };
+$("#landingStudent").onclick = async () => { showApp(); setStudentMode(true); setAdmin(false); showTab("me"); };
 
 // Tablar
 function showTab(name) {
@@ -1245,6 +1253,9 @@ async function loadMe() {
   if (!studentCode) return lockMe();
   try {
     me = await api("/api/me");
+    setStudentMode(false);
+    scheduleLoaded = false; schedule = [];
+    await loadTodayWidget();
     $("#meLock").classList.add("hidden"); $("#meMain").classList.remove("hidden");
     $("#meName").textContent = me.name;
     const months = [...new Set(me.records.map(r => r.date.slice(0, 7)))].sort().reverse();
@@ -1301,7 +1312,7 @@ $("#meBtn").onclick = () => {
 };
 $("#meCode").onkeydown = e => { if (e.key === "Enter") $("#meBtn").click(); };
 $("#meMonth").onchange = renderMe;
-$("#meOut").onclick = () => { studentCode = ""; localStorage.removeItem("studentCode"); me = null; lockMe(); };
+$("#meOut").onclick = () => { studentCode = ""; localStorage.removeItem("studentCode"); me = null; setStudentMode(true); scheduleLoaded = false; schedule = []; lockMe(); };
 
 // Boshlash
 const today = new Date();

@@ -460,13 +460,13 @@ async function checkToken(t) {
 }
 
 $("#loginBtn").onclick = async () => {
-  if (isAdmin) { await fetch("/api/auth/logout", { method: "POST" }); token = ""; setAdmin(false); wipeAdminData(); refreshDocsIfOpen(); return; }
+  if (isAdmin) { await fetch("/api/auth/logout", { method: "POST" }); token = ""; setAdmin(false); scheduleLoaded = false; schedule = []; await loadTodayWidget(); wipeAdminData(); refreshDocsIfOpen(); return; }
   const t = prompt("Platforma admin paroli yoki guruh sardori kodini kiriting:");
   if (!t) return;
   const platform = await checkToken(t);
-  if (platform) { setAdmin(true, true); showTab("att"); refreshDocsIfOpen(); return; }
+  if (platform) { setAdmin(true, true); scheduleLoaded = false; schedule = []; await loadTodayWidget(); showTab("att"); refreshDocsIfOpen(); return; }
   const captain = await fetch("/api/auth/group-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: t }) });
-  if (captain.ok) { const info = await captain.json(); setAdmin(true, false, info.group || ""); showTab("att"); refreshDocsIfOpen(); }
+  if (captain.ok) { const info = await captain.json(); setAdmin(true, false, info.group || ""); scheduleLoaded = false; schedule = []; await loadTodayWidget(); showTab("att"); refreshDocsIfOpen(); }
   else toast("Parol yoki guruh kodi noto'g'ri");
 };
 
@@ -1266,11 +1266,14 @@ const today = new Date();
 const iso = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().slice(0, 10);  // mahalliy sana
 $("#date").value = iso; $("#statDate").value = iso; $("#statWeekDate").value = iso; $("#month").value = iso.slice(0, 7);
 $("#date").onchange = () => { lessonId = null; loadLessons(); };
-loadTodayWidget();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 (async () => {
-  try { const r = await fetch("/api/auth/session"); if (r.ok) { const s = await r.json(); setAdmin(true, s.role === "platform", s.group || ""); } else setAdmin(false); }
-  catch { setAdmin(false); }
+  try {
+    const r = await fetch("/api/auth/session");
+    if (r.ok) { const s = await r.json(); setAdmin(true, s.role === "platform", s.group || ""); }
+    else setAdmin(false);
+  } catch { setAdmin(false); }
+  await loadTodayWidget();
 })();
 </script>
 </body>

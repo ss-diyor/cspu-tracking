@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XTA-26/5</title>
+<title>Davomat platformasi</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&display=swap" rel="stylesheet">
@@ -166,15 +166,15 @@
 <section id="landing" class="landing">
   <div class="landing-hero">
     <div>
-      <p class="landing-kicker">Guruh boshqaruv platformasi</p>
-      <h1>XTA-26/5</h1>
+      <p class="landing-kicker">O‘quv guruhlari uchun platforma</p>
+      <h1>Davomat platformasi</h1>
       <p class="landing-lead">Davomat, dars jadvali va guruh statistikalarini bir joyda qulay boshqaring.</p>
       <div class="landing-actions">
         <button id="landingLogin" type="button">Platformaga kirish</button>
         <button id="landingStudent" class="secondary" type="button">Talaba profilini ko‘rish</button>
       </div>
     </div>
-    <div class="landing-mark" aria-label="XTA-26/5">26/5</div>
+    <div class="landing-mark" aria-label="Davomat platformasi">D</div>
   </div>
   <div class="landing-features">
     <div class="card landing-feature"><b>Davomat</b><span class="muted">Har bir dars bo‘yicha davomatni tez belgilang.</span></div>
@@ -445,8 +445,8 @@
 <script>
 const LABEL = { present: "Bor", late: "Kechikdi", excused: "Sababli", unexcused: "Sababsiz" };
 const $ = s => document.querySelector(s);
-function showApp() { $("#landing").classList.add("hidden"); $("#appShell").classList.remove("hidden"); }
-function showLanding() { $("#appShell").classList.add("hidden"); $("#landing").classList.remove("hidden"); }
+function showApp() { document.title = "Davomat platformasi"; $("#landing").classList.add("hidden"); $("#appShell").classList.remove("hidden"); }
+function showLanding() { document.title = "Davomat platformasi"; $("#appShell").classList.add("hidden"); $("#landing").classList.remove("hidden"); }
 let token = ""; // Admin autentifikatsiyasi HttpOnly cookie orqali amalga oshadi.
 let studentCode = localStorage.getItem("studentCode") || "";
 let isAdmin = false;
@@ -474,6 +474,8 @@ function setAdmin(on, platform = false, groupName = "") {
   isPlatformAdmin = on && platform;
   if (on && groupName) $("#brand").textContent = groupName;
   if (!on || platform) $("#brand").textContent = "XTA-26/5";
+  if (on && platform) document.title = "XTA-26/5";
+  if (on && groupName) document.title = groupName;
   document.querySelectorAll(".admin-only").forEach(e => e.classList.toggle("hidden", !on));
   document.querySelectorAll(".student-only").forEach(e => e.classList.toggle("hidden", on));
   document.querySelectorAll('[data-tab="platform"]').forEach(e => e.classList.toggle("hidden", !isPlatformAdmin));

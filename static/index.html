@@ -471,6 +471,7 @@ async function api(path, opts = {}) {
 
 function setStudentMode(on) {
   studentMode = on;
+  if (on && !isAdmin) { $("#brand").textContent = "Talaba profili"; document.title = "Talaba profili"; }
   const locked = on && !me;
   $("#todayWidget").classList.toggle("hidden", locked);
   ["sch", "doc"].forEach(tab => document.querySelectorAll(`[data-tab="${tab}"]`).forEach(e => e.classList.toggle("hidden", locked)));
@@ -480,7 +481,7 @@ function setAdmin(on, platform = false, groupName = "") {
   isPlatformAdmin = on && platform;
   if (on) setStudentMode(false);
   if (on && groupName) $("#brand").textContent = groupName;
-  if (!on || platform) $("#brand").textContent = "XTA-26/5";
+  if ((!on && !studentMode) || platform) $("#brand").textContent = "XTA-26/5";
   if (on && platform) document.title = "XTA-26/5";
   if (on && groupName) document.title = groupName;
   document.querySelectorAll(".admin-only").forEach(e => e.classList.toggle("hidden", !on));
@@ -518,7 +519,7 @@ async function handleLogin() {
 }
 $("#loginBtn").onclick = handleLogin;
 $("#landingLogin").onclick = handleLogin;
-$("#landingStudent").onclick = async () => { showApp(); setStudentMode(true); setAdmin(false); showTab("me"); };
+$("#landingStudent").onclick = () => { window.location.href = "/student"; };
 
 // Tablar
 function showTab(name) {
@@ -1321,11 +1322,16 @@ $("#date").value = iso; $("#statDate").value = iso; $("#statWeekDate").value = i
 $("#date").onchange = () => { lessonId = null; loadLessons(); };
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 (async () => {
+  const studentPage = window.location.pathname === "/student";
   try {
     const r = await fetch("/api/auth/session");
     if (r.ok) { const s = await r.json(); showApp(); setAdmin(true, s.role === "platform", s.group || ""); await loadTodayWidget(); }
+    else if (studentPage) { showApp(); setStudentMode(true); setAdmin(false); showTab("me"); }
     else { setAdmin(false); showLanding(); }
-  } catch { setAdmin(false); showLanding(); }
+  } catch {
+    if (studentPage) { showApp(); setStudentMode(true); setAdmin(false); showTab("me"); }
+    else { setAdmin(false); showLanding(); }
+  }
 })();
 </script>
 </body>

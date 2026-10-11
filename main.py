@@ -16,7 +16,7 @@ from datetime import date, time, timedelta
 import asyncpg
 import httpx
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -1427,6 +1427,21 @@ async def delete_document(doc_id: int, request: Request):
     if row and row["storage_path"]:
         await storage_delete(row["storage_path"])
     return {"ok": True}
+
+
+@app.get("/", include_in_schema=False)
+async def root_page():
+    return RedirectResponse("/home", status_code=307)
+
+
+@app.get("/home", include_in_schema=False)
+async def home_page():
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html"))
+
+
+@app.get("/student", include_in_schema=False)
+async def student_page():
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html"))
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

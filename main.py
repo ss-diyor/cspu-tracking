@@ -394,8 +394,8 @@ class Record(BaseModel):
 
 class AttendanceIn(BaseModel):
     records: list[Record]
-
-
+class AttendanceCopyIn(BaseModel):
+    target_lesson_ids: list[int]
 # ---------- Talabalar ----------
 @app.get("/api/students", dependencies=[Depends(admin)])
 async def list_students(request: Request):
@@ -539,6 +539,44 @@ async def save_attendance(lesson_id: int, body: AttendanceIn, request: Request):
         raise HTTPException(400, "Talaba topilmadi")
     await audit(request, "attendance_save", "lesson", lesson_id, f"records={len(body.records)}")
     return {"saved": len(body.records)}
+
+
+@app.post("/api/lessons/{lesson_id}/attendance/copy", dependencies=[Depends(admin)])
+async def copy_attendance(lesson_id: int, body: AttendanceCopyIn, request: Request):
+    group_id = gid(request)
+    target_ids = sorted({int(x) for x in body.target_lesson_ids if int(x) > 0})
+    if not target_ids:
+        raise HTTPException(400, "Kamida bitta juftlikni tanlang")
+    if lesson_id in target_ids:
+        raise HTTPException(400, "Manba darsni nishon sifatida tanlab bo'lmaydi")
+    source = await app.state.pool.fetchrow(
+        "SELECT id, lesson_date FROM lessons WHERE id=$1 AND group_id=$2", lesson_id, group_id
+    )
+    if not source:
+        raise HTTPException(404, "Manba dars topilmadi")
+    targets = await app.state.pool.fetch(
+        "SELECT id FROM lessons WHERE id=ANY($1::int[]) AND group_id=$2 AND lesson_date=$3",
+        target_ids, group_id, source["lesson_date"],
+    )
+    found_ids = {r["id"] for r in targets}
+    if found_ids != set(target_ids):
+        raise HTTPException(400, "Tanlangan darslar shu sana yoki guruhga tegishli emas")
+    async with app.state.pool.acquire() as con:
+        async with con.transaction():
+            for target_id in target_ids:
+                await con.execute(
+                    """INSERT INTO attendance (lesson_id, student_id, status, note)
+                       SELECT $1, s.id, COALESCE(a.status, 'present'),
+                              CASE WHEN COALESCE(a.status, 'present') = 'excused' THEN COALESCE(a.note, '') ELSE '' END
+                       FROM students s
+                       LEFT JOIN attendance a ON a.student_id=s.id AND a.lesson_id=$2
+                       WHERE s.active AND s.group_id=$3
+                       ON CONFLICT (lesson_id, student_id) DO UPDATE SET
+                         status=EXCLUDED.status, note=EXCLUDED.note""",
+                    target_id, lesson_id, group_id,
+                )
+    await audit(request, "attendance_copy", "lesson", lesson_id, f"targets={len(target_ids)}")
+    return {"copied": len(target_ids)}
 
 
 # ---------- Statistika ----------

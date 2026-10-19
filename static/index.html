@@ -74,6 +74,8 @@
   .abs-row span:last-child { font-weight: 500; }
   .reason { margin-top: 6px; display: grid; gap: 6px; }
   .reason input, .reason select { font-size: .9rem; padding: 7px 9px; }
+  .copy-box { margin: 8px 0 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+  .copy-box select { min-height: 72px; }
   tr.risk td:first-child, tr.risk .pct { color: var(--unexcused); font-weight: 700; }
   .risk-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
   .risk-item:first-of-type { border-top: 0; }
@@ -234,6 +236,15 @@
     <div class="card hidden" id="attCard">
       <div class="muted" id="attTitle"></div>
       <button class="sm primary admin-only hidden" id="markAllPresent" style="width:100%;margin:8px 0">Barchasini Bor deb belgilash</button>
+      <div class="copy-box admin-only hidden" id="copyAttendanceBox">
+        <div class="muted">Shu davomat holatini boshqa juftliklarga qo‘llash</div>
+        <select id="attendanceCopyTargets" multiple size="3" aria-label="Davomatni qo‘llash juftliklari" style="margin-top:8px"></select>
+        <div class="row" style="margin:8px 0 0">
+          <button class="sm" id="copyNextAttendance">Keyingi juftliklarni tanlash</button>
+          <button class="sm primary" id="copySelectedAttendance">Tanlanganlarga qo‘llash</button>
+        </div>
+        <div class="muted" style="margin-top:4px">Aniq juftliklarni tanlash uchun ro‘yxatda Ctrl/Cmd tugmasidan foydalaning.</div>
+      </div>
       <div id="attList"></div>
       <button class="primary admin-only hidden" id="saveAtt" style="width:100%;margin-top:10px">Davomatni saqlash</button>
       <div class="row admin-only hidden" style="margin:8px 0 0">
@@ -711,6 +722,24 @@ $("#addLesson").onclick = async () => {
   } catch (e) { toast(e.message); }
 };
 
+function renderAttendanceCopyTargets() {
+  const box = $("#copyAttendanceBox"), select = $("#attendanceCopyTargets");
+  const source = lessonsToday.find(l => l.id === lessonId);
+  const targets = lessonsToday.filter(l => l.id !== lessonId).sort((a, b) => a.pair_no - b.pair_no);
+  select.innerHTML = targets.map(l => `<option value="${l.id}">${l.pair_no}-juftlik · ${esc(l.subject)}</option>`).join("");
+  $("#copyNextAttendance").textContent = source && source.pair_no === 1 ? "2 va keyingilarni tanlash" : "Keyingi juftliklarni tanlash";
+  box.classList.toggle("hidden", !isAdmin || !source || !targets.length);
+}
+function attendanceRecords() {
+  return Object.entries(marks).map(([student_id, status]) => ({
+    student_id: +student_id, status,
+    note: status === "excused" ? (notes[student_id] || "") : ""
+  }));
+}
+async function persistAttendance() {
+  if (!lessonId) throw new Error("Avval darsni tanlang");
+  return api(`/api/lessons/${lessonId}/attendance`, { method: "PUT", body: JSON.stringify({ records: attendanceRecords() }) });
+}
 async function openLesson(id, title) {
   if (!id) return;
   lessonId = id;
@@ -732,6 +761,7 @@ async function openLesson(id, title) {
       </div>` : ""}
     </div>`).join("") || '<span class="muted">Avval talabalarni qo\'shing.</span>';
   $("#attCard").classList.remove("hidden");
+  renderAttendanceCopyTargets();
   document.querySelectorAll("#lessons button").forEach(b => b.classList.toggle("on", b.textContent === $("#attTitle").textContent));
 }
 
@@ -760,12 +790,24 @@ $("#attList").addEventListener("input", e => {
 });
 
 $("#saveAtt").onclick = async () => {
-  const records = Object.entries(marks).map(([student_id, status]) => ({
-    student_id: +student_id, status,
-    note: status === "excused" ? (notes[student_id] || "") : ""
-  }));
-  try { await api(`/api/lessons/${lessonId}/attendance`, { method: "PUT", body: JSON.stringify({ records }) }); toast("Saqlandi"); }
+  try { await persistAttendance(); toast("Saqlandi"); }
   catch (e) { toast(e.message); }
+};
+$("#copyNextAttendance").onclick = () => {
+  const source = lessonsToday.find(l => l.id === lessonId);
+  document.querySelectorAll("#attendanceCopyTargets option").forEach(o => {
+    const target = lessonsToday.find(l => l.id === +o.value);
+    o.selected = !!source && target && target.pair_no > source.pair_no;
+  });
+};
+$("#copySelectedAttendance").onclick = async () => {
+  const ids = [...$("#attendanceCopyTargets").selectedOptions].map(o => +o.value);
+  if (!ids.length) return toast("Kamida bitta juftlikni tanlang");
+  try {
+    await persistAttendance();
+    const result = await api(`/api/lessons/${lessonId}/attendance/copy`, { method: "POST", body: JSON.stringify({ target_lesson_ids: ids }) });
+    toast(`${result.copied} ta juftlikka qo‘llandi`);
+  } catch (e) { toast(e.message); }
 };
 
 // Statistika

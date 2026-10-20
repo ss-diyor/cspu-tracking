@@ -76,6 +76,10 @@
   .reason input, .reason select { font-size: .9rem; padding: 7px 9px; }
   .copy-box { margin: 8px 0 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
   .copy-box select { min-height: 72px; }
+  .att-filters { margin: 10px 0 12px; }
+  .att-filter-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .att-filter-buttons button { padding: 7px 10px; font-size: .85rem; }
+  .att-filter-buttons button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
   tr.risk td:first-child, tr.risk .pct { color: var(--unexcused); font-weight: 700; }
   .risk-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
   .risk-item:first-of-type { border-top: 0; }
@@ -244,6 +248,17 @@
           <button class="sm primary" id="copySelectedAttendance">Tanlanganlarga qo‘llash</button>
         </div>
         <div class="muted" style="margin-top:4px">Aniq juftliklarni tanlash uchun ro‘yxatda Ctrl/Cmd tugmasidan foydalaning.</div>
+      </div>
+      <div class="att-filters" id="attFilters">
+        <input id="attStudentSearch" type="search" placeholder="Talabani qidirish..." aria-label="Talabani qidirish">
+        <div class="att-filter-buttons" id="attFilterButtons">
+          <button type="button" class="on" data-att-filter="all">Barchasi</button>
+          <button type="button" data-att-filter="present">Bor</button>
+          <button type="button" data-att-filter="excused">Sababli</button>
+          <button type="button" data-att-filter="unexcused">Sababsiz</button>
+          <button type="button" data-att-filter="late">Kechikkan</button>
+          <button type="button" data-att-filter="unmarked">Belgilanmagan</button>
+        </div>
       </div>
       <div id="attList"></div>
       <button class="primary admin-only hidden" id="saveAtt" style="width:100%;margin-top:10px">Davomatni saqlash</button>
@@ -490,7 +505,9 @@ let isPlatformAdmin = false;
 let studentMode = false;
 let lessonId = null;
 let marks = {};          // student_id -> status
+let marked = {};         // student_id -> davomat aniq belgilanganmi
 let notes = {};          // student_id -> "Sababli" sababi
+let attFilter = "all";
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const toast = t => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.append(d); setTimeout(() => d.remove(), 2200); };
@@ -745,9 +762,12 @@ async function openLesson(id, title) {
   lessonId = id;
   if (title) $("#attTitle").textContent = title;
   const rows = await api(`/api/lessons/${id}/attendance`);
-  marks = {}; notes = {};
+  marks = {}; marked = {}; notes = {};
+  attFilter = "all"; $("#attStudentSearch").value = "";
+  document.querySelectorAll("#attFilterButtons button").forEach(b => b.classList.toggle("on", b.dataset.attFilter === "all"));
   rows.forEach(r => {
     marks[r.student_id] = r.status || "present";   // belgilanmagan = Bor
+    marked[r.student_id] = !!r.status;
     notes[r.student_id] = r.note || "";
   });
   const list = $("#attList");
@@ -762,12 +782,29 @@ async function openLesson(id, title) {
     </div>`).join("") || '<span class="muted">Avval talabalarni qo\'shing.</span>';
   $("#attCard").classList.remove("hidden");
   renderAttendanceCopyTargets();
+  applyAttendanceFilters();
   document.querySelectorAll("#lessons button").forEach(b => b.classList.toggle("on", b.textContent === $("#attTitle").textContent));
 }
+function applyAttendanceFilters() {
+  const query = $("#attStudentSearch").value.trim().toLowerCase();
+  document.querySelectorAll("#attList .stu").forEach(row => {
+    const id = row.dataset.id;
+    const name = row.querySelector(".name")?.textContent.toLowerCase() || "";
+    const status = marked[id] ? marks[id] : "unmarked";
+    row.classList.toggle("hidden", (query && !name.includes(query)) || (attFilter !== "all" && status !== attFilter));
+  });
+}
+$("#attStudentSearch").oninput = applyAttendanceFilters;
+$("#attFilterButtons").onclick = e => {
+  const button = e.target.closest("button[data-att-filter]"); if (!button) return;
+  attFilter = button.dataset.attFilter;
+  document.querySelectorAll("#attFilterButtons button").forEach(b => b.classList.toggle("on", b === button));
+  applyAttendanceFilters();
+};
 
 $("#markAllPresent").onclick = () => {
   if (!isAdmin || !Object.keys(marks).length) return;
-  Object.keys(marks).forEach(id => { marks[id] = "present"; notes[id] = ""; });
+  Object.keys(marks).forEach(id => { marks[id] = "present"; marked[id] = true; notes[id] = ""; });
   document.querySelectorAll("#attList .stu").forEach(row => {
     row.querySelectorAll("button[data-s]").forEach(b => b.classList.toggle("on", b.dataset.s === "present"));
     const reason = row.querySelector(".reason"); if (reason) reason.classList.add("hidden");
@@ -779,9 +816,11 @@ $("#attList").onclick = e => {
   const b = e.target.closest("button[data-s]"); if (!b || !isAdmin) return;
   const row = b.closest(".stu");
   marks[row.dataset.id] = b.dataset.s;
+  marked[row.dataset.id] = true;
   row.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
   const reason = row.querySelector(".reason");
   if (reason) reason.classList.toggle("hidden", b.dataset.s !== "excused");
+  applyAttendanceFilters();
 };
 
 $("#attList").addEventListener("input", e => {

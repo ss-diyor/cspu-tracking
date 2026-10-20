@@ -787,11 +787,20 @@ async function openLesson(id, title) {
 }
 function applyAttendanceFilters() {
   const query = $("#attStudentSearch").value.trim().toLowerCase();
-  document.querySelectorAll("#attList .stu").forEach(row => {
+  const counts = { all: 0, present: 0, excused: 0, unexcused: 0, late: 0, unmarked: 0 };
+  const labels = { all: "Barchasi", present: "Bor", excused: "Sababli", unexcused: "Sababsiz", late: "Kechikkan", unmarked: "Belgilanmagan" };
+  const rows = document.querySelectorAll("#attList .stu");
+  rows.forEach(row => {
     const id = row.dataset.id;
     const name = row.querySelector(".name")?.textContent.toLowerCase() || "";
     const status = marked[id] ? marks[id] : "unmarked";
+    counts.all++;
+    counts[status]++;
     row.classList.toggle("hidden", (query && !name.includes(query)) || (attFilter !== "all" && status !== attFilter));
+  });
+  document.querySelectorAll("#attFilterButtons button[data-att-filter]").forEach(button => {
+    const key = button.dataset.attFilter;
+    button.textContent = `${labels[key]} (${counts[key] || 0})`;
   });
 }
 $("#attStudentSearch").oninput = applyAttendanceFilters;

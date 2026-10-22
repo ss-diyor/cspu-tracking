@@ -26,6 +26,15 @@
     .group-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
     .group-card { padding:16px; }
     .group-head { display:flex; justify-content:space-between; gap:12px; align-items:start; }
+    .group-actions { display:flex; align-items:start; gap:8px; }
+    .fullscreen-btn { border:1px solid var(--line); border-radius:8px; padding:6px 9px; background:var(--surface); color:var(--muted); cursor:pointer; font:inherit; font-size:.78rem; white-space:nowrap; }
+    .fullscreen-btn:hover { color:var(--ink); border-color:var(--accent); }
+    .group-card:fullscreen { width:100vw; height:100vh; max-width:none; border:0; border-radius:0; padding:clamp(24px,6vw,80px); display:flex; flex-direction:column; justify-content:center; }
+    .group-card:fullscreen .group-body { grid-template-columns:220px 1fr; max-width:760px; width:100%; margin:34px auto 0; }
+    .group-card:fullscreen .pie { width:210px; height:210px; }
+    .group-card:fullscreen .pie::after { inset:46px; }
+    .group-card:fullscreen .legend { font-size:1.05rem; gap:10px; }
+    .group-card:fullscreen .rate { font-size:2.8rem; }
     .group-head h2 { overflow-wrap:anywhere; }
     .rate { color:var(--accent); font-size:1.8rem; font-weight:700; line-height:1; white-space:nowrap; }
     .rate small { display:block; color:var(--muted); font-size:.7rem; font-weight:400; text-align:right; margin-top:4px; }
@@ -92,7 +101,7 @@ function render(data) {
   ].map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${nf.format(value)}</strong></div>`).join('');
   $('#updated').textContent = `Yangilandi: ${new Date().toLocaleString('uz-UZ')}`;
   $('#groups').innerHTML = data.length ? data.map(g => `<article class="group-card">
-    <div class="group-head"><h2>${esc(g.name)}</h2><div class="rate">${pct(g.attendance_rate)}<small>davomat</small></div></div>
+    <div class="group-head"><h2>${esc(g.name)}</h2><div class="group-actions"><button class="fullscreen-btn" type="button" data-fullscreen-group aria-label="${esc(g.name)} blokini to‘liq ekranga chiqarish">To‘liq ekran</button><div class="rate">${pct(g.attendance_rate)}<small>davomat</small></div></div></div>
     <div class="group-body"><div class="pie" style="${pieStyle(g)}" aria-label="${esc(g.name)} davomat diagrammasi"></div><div class="legend">
       ${legendRow('present','Bor',g.present)}${legendRow('late','Kechikdi',g.late)}${legendRow('excused','Sababli',g.excused)}${legendRow('unexcused','Sababsiz',g.unexcused)}
     </div></div>
@@ -101,6 +110,19 @@ function render(data) {
   const ranking = [...data].sort((a,b) => b.attendance_rate - a.attendance_rate);
   $('#ranking').innerHTML = ranking.length ? ranking.map(g => `<div class="rank-row"><span>${esc(g.name)}</span><div class="bar"><i style="width:${pct(g.attendance_rate)}"></i></div><b>${pct(g.attendance_rate)}</b></div>`).join('') : '<div class="empty">Taqqoslash uchun ma’lumot yo‘q.</div>';
 }
+$('#groups').onclick = event => {
+  const button = event.target.closest('[data-fullscreen-group]');
+  if (!button) return;
+  const card = button.closest('.group-card');
+  if (!card) return;
+  if (document.fullscreenElement === card) document.exitFullscreen();
+  else if (card.requestFullscreen) card.requestFullscreen().catch(() => {});
+};
+document.addEventListener('fullscreenchange', () => {
+  document.querySelectorAll('[data-fullscreen-group]').forEach(button => {
+    button.textContent = document.fullscreenElement && button.closest('.group-card') === document.fullscreenElement ? 'Oddiy ko‘rinish' : 'To‘liq ekran';
+  });
+});
 fetch('/api/public/stats', { headers: {'Accept':'application/json'} }).then(r => { if (!r.ok) throw new Error('Statistika yuklanmadi'); return r.json(); }).then(render).catch(error => { $('#summary').innerHTML = ''; $('#groups').innerHTML = `<div class="error">${esc(error.message)}</div>`; $('#ranking').innerHTML = ''; });
 </script>
 </body>

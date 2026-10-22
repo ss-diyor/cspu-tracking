@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Guruhlar statistikasi</title>
+  <style>
+    :root { --bg:#eef2f5; --surface:#fff; --ink:#14212b; --muted:#5d6b76; --line:#d5dde3; --accent:#0f6b8f; --present:#1f8a4c; --late:#1d6fa5; --excused:#b7791f; --unexcused:#c9342b; }
+    @media (prefers-color-scheme:dark) { :root { --bg:#0f171d; --surface:#17222a; --ink:#e8eef2; --muted:#93a2ad; --line:#2a3943; --accent:#4cb4d8; } }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 Onest,Inter,system-ui,-apple-system,sans-serif; }
+    main { width:min(1120px,100%); margin:0 auto; padding:28px 20px 48px; }
+    header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:10px 0 28px; border-bottom:1px solid var(--line); }
+    .kicker { margin:0 0 8px; color:var(--accent); font-size:.78rem; font-weight:700; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:0; font-size:clamp(2rem,5vw,3.4rem); line-height:1; letter-spacing:-.045em; }
+    h2 { margin:0; font-size:1.1rem; }
+    p { margin:0; color:var(--muted); }
+    .back { color:var(--accent); text-decoration:none; border:1px solid var(--line); border-radius:8px; padding:8px 12px; white-space:nowrap; }
+    .summary { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:24px 0; }
+    .metric, .group-card, .ranking { background:var(--surface); border:1px solid var(--line); border-radius:12px; }
+    .metric { padding:16px; }
+    .metric strong { display:block; margin-top:4px; font-size:1.7rem; }
+    .metric span { color:var(--muted); font-size:.85rem; }
+    .section-head { display:flex; align-items:end; justify-content:space-between; gap:12px; margin:26px 0 12px; }
+    .updated { font-size:.82rem; }
+    .group-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
+    .group-card { padding:16px; }
+    .group-head { display:flex; justify-content:space-between; gap:12px; align-items:start; }
+    .group-head h2 { overflow-wrap:anywhere; }
+    .rate { color:var(--accent); font-size:1.8rem; font-weight:700; line-height:1; white-space:nowrap; }
+    .rate small { display:block; color:var(--muted); font-size:.7rem; font-weight:400; text-align:right; margin-top:4px; }
+    .group-body { display:grid; grid-template-columns:118px 1fr; gap:16px; align-items:center; margin-top:18px; }
+    .pie { width:112px; height:112px; border-radius:50%; position:relative; background:conic-gradient(var(--present) 0deg 0deg, var(--late) 0deg 0deg, var(--excused) 0deg 0deg, var(--unexcused) 0deg 0deg, var(--line) 0deg 360deg); }
+    .pie::after { content:""; position:absolute; inset:25px; border-radius:50%; background:var(--surface); }
+    .legend { display:grid; gap:5px; font-size:.85rem; }
+    .legend-row { display:flex; justify-content:space-between; gap:12px; color:var(--muted); }
+    .legend-row b { color:var(--ink); font-weight:500; }
+    .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
+    .dot.present { background:var(--present); } .dot.late { background:var(--late); } .dot.excused { background:var(--excused); } .dot.unexcused { background:var(--unexcused); }
+    .meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:16px; }
+    .pill { color:var(--muted); background:var(--bg); border:1px solid var(--line); border-radius:999px; padding:4px 9px; font-size:.78rem; }
+    .ranking { padding:16px; }
+    .rank-row { display:grid; grid-template-columns:minmax(120px,1fr) 2fr 54px; gap:10px; align-items:center; padding:10px 0; border-top:1px solid var(--line); }
+    .rank-row:first-child { border-top:0; }
+    .bar { height:9px; background:var(--bg); border-radius:99px; overflow:hidden; }
+    .bar i { display:block; height:100%; border-radius:inherit; background:var(--accent); }
+    .empty, .error { padding:28px; text-align:center; border:1px dashed var(--line); border-radius:12px; color:var(--muted); }
+    footer { margin-top:32px; color:var(--muted); font-size:.82rem; text-align:center; }
+    @media (max-width:700px) { main { padding:20px 14px 36px; } header { padding-bottom:22px; } .summary { grid-template-columns:repeat(2,1fr); } .group-body { grid-template-columns:100px 1fr; gap:12px; } .pie { width:96px; height:96px; } .pie::after { inset:22px; } .rank-row { grid-template-columns:1fr 46px; } .rank-row .bar { grid-column:1 / -1; grid-row:2; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="kicker">Ochiq platforma statistikasi</p>
+      <h1>Guruhlar davomat ko‘rsatkichi</h1>
+      <p style="max-width:650px;margin-top:14px">Faol guruhlar bo‘yicha umumiy natijalar. Shaxsiy talabalar ma’lumotlari bu sahifada ko‘rsatilmaydi.</p>
+    </div>
+    <a class="back" href="/home">Bosh sahifa</a>
+  </header>
+  <section class="summary" id="summary"><div class="metric"><span>Yuklanmoqda...</span></div></section>
+  <div class="section-head"><div><h2>Guruhlar kesimida</h2><p>Davomat holatlari taqsimoti</p></div><p class="updated" id="updated"></p></div>
+  <section class="group-grid" id="groups"><div class="empty">Statistika yuklanmoqda...</div></section>
+  <div class="section-head"><div><h2>Taqqoslash</h2><p>Bor va kechikkan holatlar ulushi</p></div></div>
+  <section class="ranking" id="ranking"><div class="empty">Yuklanmoqda...</div></section>
+  <footer>Ma’lumotlar davomat tizimida saqlangan umumiy yozuvlar asosida shakllantiriladi.</footer>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const nf = new Intl.NumberFormat('uz-UZ');
+function pct(value) { return `${Math.max(0, Math.min(100, Number(value) || 0))}%`; }
+function pieStyle(g) {
+  const total = g.marked || 0;
+  if (!total) return 'background: conic-gradient(var(--line) 0deg 360deg)';
+  const values = [g.present, g.late, g.excused, g.unexcused];
+  const colors = ['var(--present)', 'var(--late)', 'var(--excused)', 'var(--unexcused)'];
+  let cursor = 0;
+  const stops = values.map((value, i) => { const next = cursor + value / total * 360; const stop = `${colors[i]} ${cursor}deg ${next}deg`; cursor = next; return stop; });
+  return `background: conic-gradient(${stops.join(',')})`;
+}
+function legendRow(cls, label, value) { return `<div class="legend-row"><span><i class="dot ${cls}"></i>${label}</span><b>${nf.format(value)}</b></div>`; }
+function render(data) {
+  const totals = data.reduce((a, g) => {
+    ['students','lessons','present','late','excused','unexcused','marked'].forEach(k => a[k] += Number(g[k]) || 0);
+    return a;
+  }, {students:0,lessons:0,present:0,late:0,excused:0,unexcused:0,marked:0});
+  const rate = totals.marked ? Math.round((totals.present + totals.late) * 100 / totals.marked) : 0;
+  $('#summary').innerHTML = [
+    ['Faol guruhlar', data.length], ['Talabalar', totals.students], ['Darslar', totals.lessons], ['Umumiy davomat', pct(rate)]
+  ].map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${nf.format(value)}</strong></div>`).join('');
+  $('#updated').textContent = `Yangilandi: ${new Date().toLocaleString('uz-UZ')}`;
+  $('#groups').innerHTML = data.length ? data.map(g => `<article class="group-card">
+    <div class="group-head"><h2>${esc(g.name)}</h2><div class="rate">${pct(g.attendance_rate)}<small>davomat</small></div></div>
+    <div class="group-body"><div class="pie" style="${pieStyle(g)}" aria-label="${esc(g.name)} davomat diagrammasi"></div><div class="legend">
+      ${legendRow('present','Bor',g.present)}${legendRow('late','Kechikdi',g.late)}${legendRow('excused','Sababli',g.excused)}${legendRow('unexcused','Sababsiz',g.unexcused)}
+    </div></div>
+    <div class="meta"><span class="pill">${nf.format(g.students)} talaba</span><span class="pill">${nf.format(g.lessons)} dars</span><span class="pill">${pct(g.completion_rate)} belgilangan</span></div>
+  </article>`).join('') : '<div class="empty">Hozircha faol guruhlar mavjud emas.</div>';
+  const ranking = [...data].sort((a,b) => b.attendance_rate - a.attendance_rate);
+  $('#ranking').innerHTML = ranking.length ? ranking.map(g => `<div class="rank-row"><span>${esc(g.name)}</span><div class="bar"><i style="width:${pct(g.attendance_rate)}"></i></div><b>${pct(g.attendance_rate)}</b></div>`).join('') : '<div class="empty">Taqqoslash uchun ma’lumot yo‘q.</div>';
+}
+fetch('/api/public/stats', { headers: {'Accept':'application/json'} }).then(r => { if (!r.ok) throw new Error('Statistika yuklanmadi'); return r.json(); }).then(render).catch(error => { $('#summary').innerHTML = ''; $('#groups').innerHTML = `<div class="error">${esc(error.message)}</div>`; $('#ranking').innerHTML = ''; });
+</script>
+</body>
+</html>

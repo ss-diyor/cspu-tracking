@@ -591,6 +591,37 @@ async def copy_attendance(lesson_id: int, body: AttendanceCopyIn, request: Reque
 
 
 # ---------- Statistika ----------
+@app.get("/api/public/stats")
+async def public_stats():
+    """Barcha faol guruhlar bo'yicha faqat umumiy, shaxsiyatsiz statistika."""
+    rows = await app.state.pool.fetch(
+        """SELECT g.name,
+                  COUNT(DISTINCT s.id) FILTER (WHERE s.active) AS students,
+                  COUNT(DISTINCT l.id) AS lessons,
+                  COUNT(a.id) FILTER (WHERE a.status='present') AS present,
+                  COUNT(a.id) FILTER (WHERE a.status='late') AS late,
+                  COUNT(a.id) FILTER (WHERE a.status='excused') AS excused,
+                  COUNT(a.id) FILTER (WHERE a.status='unexcused') AS unexcused
+           FROM groups g
+           LEFT JOIN students s ON s.group_id=g.id AND s.active
+           LEFT JOIN lessons l ON l.group_id=g.id
+           LEFT JOIN attendance a ON a.lesson_id=l.id AND a.student_id=s.id
+           WHERE g.active
+           GROUP BY g.id, g.name
+           ORDER BY g.name"""
+    )
+    result = []
+    for row in rows:
+        item = dict(row)
+        item.update({key: int(item[key] or 0) for key in ("students", "lessons", "present", "late", "excused", "unexcused")})
+        item["marked"] = item["present"] + item["late"] + item["excused"] + item["unexcused"]
+        item["possible"] = item["students"] * item["lessons"]
+        item["attendance_rate"] = round((item["present"] + item["late"]) * 100 / item["marked"]) if item["marked"] else 0
+        item["completion_rate"] = round(item["marked"] * 100 / item["possible"]) if item["possible"] else 0
+        result.append(item)
+    return result
+
+
 async def month_stats(month: str, group_id: int):
     start, end = month_range(month)
     rows = await app.state.pool.fetch(
@@ -1503,6 +1534,7 @@ async def admin_page():
 @app.get("/captain", include_in_schema=False)
 async def captain_page():
     return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html"))
-
-
+@app.get("/stats", include_in_schema=False)
+async def public_stats_page():
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "stats.html"))
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

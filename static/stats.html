@@ -27,14 +27,21 @@
     .group-card { padding:16px; }
     .group-head { display:flex; justify-content:space-between; gap:12px; align-items:start; }
     .group-actions { display:flex; align-items:start; gap:8px; }
-    .fullscreen-btn { border:1px solid var(--line); border-radius:8px; padding:6px 9px; background:var(--surface); color:var(--muted); cursor:pointer; font:inherit; font-size:.78rem; white-space:nowrap; }
+    .fullscreen-btn { width:36px; height:36px; display:grid; place-items:center; border:1px solid var(--line); border-radius:8px; padding:0; background:var(--surface); color:var(--muted); cursor:pointer; }
+    .fullscreen-btn svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
     .fullscreen-btn:hover { color:var(--ink); border-color:var(--accent); }
-    .group-card:fullscreen { width:100vw; height:100vh; max-width:none; border:0; border-radius:0; padding:clamp(24px,6vw,80px); display:flex; flex-direction:column; justify-content:center; }
-    .group-card:fullscreen .group-body { grid-template-columns:220px 1fr; max-width:760px; width:100%; margin:34px auto 0; }
-    .group-card:fullscreen .pie { width:210px; height:210px; }
-    .group-card:fullscreen .pie::after { inset:46px; }
-    .group-card:fullscreen .legend { font-size:1.05rem; gap:10px; }
-    .group-card:fullscreen .rate { font-size:2.8rem; }
+    .group-card:fullscreen { width:100vw; height:100vh; max-width:none; border:0; border-radius:0; padding:clamp(32px,5vw,88px); display:flex; flex-direction:column; justify-content:center; overflow:auto; }
+    .group-card:fullscreen .group-head { width:min(1400px,100%); margin:0 auto; align-items:center; }
+    .group-card:fullscreen .group-head h2 { font-size:clamp(2rem,4vw,4.5rem); letter-spacing:-.05em; }
+    .group-card:fullscreen .group-body { grid-template-columns:minmax(260px,38%) 1fr; gap:clamp(36px,7vw,120px); max-width:1400px; width:100%; flex:1; margin:clamp(38px,7vh,100px) auto 0; align-items:center; }
+    .group-card:fullscreen .pie { width:min(34vw,380px); height:min(34vw,380px); margin:0 auto; }
+    .group-card:fullscreen .pie::after { inset:25%; }
+    .group-card:fullscreen .legend { width:min(620px,100%); font-size:clamp(1.1rem,1.7vw,1.55rem); gap:clamp(12px,2vh,24px); }
+    .group-card:fullscreen .dot { width:12px; height:12px; margin-right:10px; }
+    .group-card:fullscreen .rate { font-size:clamp(2.4rem,5vw,5.5rem); }
+    .group-card:fullscreen .rate small { font-size:clamp(.75rem,1.2vw,1rem); }
+    .group-card:fullscreen .meta { width:min(1400px,100%); margin:clamp(28px,5vh,64px) auto 0; }
+    .group-card:fullscreen .pill { font-size:clamp(.85rem,1.2vw,1.1rem); padding:8px 14px; }
     .group-head h2 { overflow-wrap:anywhere; }
     .rate { color:var(--accent); font-size:1.8rem; font-weight:700; line-height:1; white-space:nowrap; }
     .rate small { display:block; color:var(--muted); font-size:.7rem; font-weight:400; text-align:right; margin-top:4px; }
@@ -101,7 +108,7 @@ function render(data) {
   ].map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${nf.format(value)}</strong></div>`).join('');
   $('#updated').textContent = `Yangilandi: ${new Date().toLocaleString('uz-UZ')}`;
   $('#groups').innerHTML = data.length ? data.map(g => `<article class="group-card">
-    <div class="group-head"><h2>${esc(g.name)}</h2><div class="group-actions"><button class="fullscreen-btn" type="button" data-fullscreen-group aria-label="${esc(g.name)} blokini to‘liq ekranga chiqarish">To‘liq ekran</button><div class="rate">${pct(g.attendance_rate)}<small>davomat</small></div></div></div>
+    <div class="group-head"><h2>${esc(g.name)}</h2><div class="group-actions"><button class="fullscreen-btn" type="button" data-fullscreen-group aria-label="${esc(g.name)} blokini to‘liq ekranga chiqarish" title="To‘liq ekran"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/></svg></button><div class="rate">${pct(g.attendance_rate)}<small>davomat</small></div></div></div>
     <div class="group-body"><div class="pie" style="${pieStyle(g)}" aria-label="${esc(g.name)} davomat diagrammasi"></div><div class="legend">
       ${legendRow('present','Bor',g.present)}${legendRow('late','Kechikdi',g.late)}${legendRow('excused','Sababli',g.excused)}${legendRow('unexcused','Sababsiz',g.unexcused)}
     </div></div>
@@ -120,7 +127,12 @@ $('#groups').onclick = event => {
 };
 document.addEventListener('fullscreenchange', () => {
   document.querySelectorAll('[data-fullscreen-group]').forEach(button => {
-    button.textContent = document.fullscreenElement && button.closest('.group-card') === document.fullscreenElement ? 'Oddiy ko‘rinish' : 'To‘liq ekran';
+    const active = document.fullscreenElement && button.closest('.group-card') === document.fullscreenElement;
+    button.title = active ? 'Oddiy ko‘rinish' : 'To‘liq ekran';
+    button.setAttribute('aria-label', active ? 'Oddiy ko‘rinishga qaytish' : 'To‘liq ekranga chiqarish');
+    button.innerHTML = active
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H3v6M15 3h6v6M9 21H3v-6M21 15v6h-6"/></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/></svg>';
   });
 });
 fetch('/api/public/stats', { headers: {'Accept':'application/json'} }).then(r => { if (!r.ok) throw new Error('Statistika yuklanmadi'); return r.json(); }).then(render).catch(error => { $('#summary').innerHTML = ''; $('#groups').innerHTML = `<div class="error">${esc(error.message)}</div>`; $('#ranking').innerHTML = ''; });

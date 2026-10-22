@@ -378,6 +378,9 @@
       <div class="muted">Bo‘sh katakni bosing, dars ma’lumotlarini kiriting va saqlang.</div>
       <div class="quick-schedule"><div id="schQuickGrid"></div></div>
     </div>
+    <div class="row" style="margin-top:10px">
+      <button id="downloadSchedulePng" class="primary">Jadvalni PNG yuklab olish</button>
+    </div>
     <div id="schToday"></div>
     <div id="schWeek"></div>
   </section>
@@ -1160,6 +1163,81 @@ function renderQuickSchedule() {
   }).join("");
   $("#schQuickGrid").innerHTML = `<div class="quick-grid">${header}${cells}</div>`;
 }
+
+function canvasLines(ctx, text, maxWidth) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  words.forEach(word => {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(candidate).width > maxWidth) { lines.push(line); line = word; }
+    else line = candidate;
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+function drawCanvasLines(ctx, text, x, y, maxWidth, lineHeight, maxLines = 3) {
+  const lines = canvasLines(ctx, text, maxWidth).slice(0, maxLines);
+  lines.forEach((line, i) => ctx.fillText(line, x, y + i * lineHeight));
+  return lines.length;
+}
+function scheduleTime(item) {
+  const start = String(item.start_time || "").slice(0, 5);
+  const end = String(item.end_time || "").slice(0, 5);
+  return start ? `${start}${end ? `–${end}` : ""}` : "Vaqt belgilanmagan";
+}
+function downloadSchedulePng() {
+  if (!schedule.length) return toast("Avval jadvalga dars qo'shing");
+  const scale = 2, width = 1840, height = 1120;
+  const canvas = document.createElement("canvas");
+  canvas.width = width * scale; canvas.height = height * scale;
+  const ctx = canvas.getContext("2d"); ctx.scale(scale, scale);
+  const colors = { bg: "#eef2f5", surface: "#ffffff", ink: "#14212b", muted: "#5d6b76", line: "#d5dde3", accent: "#0f6b8f" };
+  ctx.fillStyle = colors.bg; ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = colors.ink; ctx.font = "700 34px Arial, sans-serif";
+  ctx.fillText($("#brand").textContent || "Davomat platformasi", 56, 62);
+  ctx.fillStyle = colors.accent; ctx.font = "500 19px Arial, sans-serif";
+  ctx.fillText("HAFTALIK DARS JADVALI", 56, 94);
+  const left = 56, top = 132, pairWidth = 116, cellWidth = (width - left * 2 - pairWidth) / 7, headerHeight = 58, rowHeight = 166;
+  ctx.fillStyle = colors.surface; ctx.fillRect(left, top, pairWidth + cellWidth * 7, headerHeight + rowHeight * 5);
+  ctx.strokeStyle = colors.line; ctx.lineWidth = 1;
+  ctx.strokeRect(left, top, pairWidth + cellWidth * 7, headerHeight + rowHeight * 5);
+  ctx.fillStyle = colors.muted; ctx.font = "700 16px Arial, sans-serif";
+  ctx.fillText("Juftlik", left + 16, top + 35);
+  [1, 2, 3, 4, 5, 6, 7].forEach((day, index) => {
+    const x = left + pairWidth + index * cellWidth;
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + headerHeight + rowHeight * 5); ctx.stroke();
+    ctx.fillText(DAYS[day], x + 12, top + 35);
+  });
+  for (let pair = 1; pair <= 5; pair++) {
+    const y = top + headerHeight + (pair - 1) * rowHeight;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + pairWidth + cellWidth * 7, y); ctx.stroke();
+    ctx.fillStyle = colors.muted; ctx.font = "700 16px Arial, sans-serif";
+    ctx.fillText(`${pair}-juftlik`, left + 14, y + 30);
+    [1, 2, 3, 4, 5, 6, 7].forEach((day, index) => {
+      const x = left + pairWidth + index * cellWidth;
+      if (index) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + rowHeight); ctx.stroke(); }
+      const item = schedule.find(l => l.weekday === day && l.pair_no === pair);
+      if (!item) { ctx.fillStyle = colors.muted; ctx.font = "400 16px Arial, sans-serif"; ctx.fillText("Dars yo‘q", x + 12, y + 32); return; }
+      ctx.fillStyle = colors.ink; ctx.font = "700 18px Arial, sans-serif";
+      const subjectLines = drawCanvasLines(ctx, item.subject, x + 12, y + 30, cellWidth - 24, 24, 3);
+      ctx.fillStyle = colors.accent; ctx.font = "500 15px Arial, sans-serif";
+      ctx.fillText(scheduleTime(item), x + 12, y + 30 + subjectLines * 24 + 4);
+      ctx.fillStyle = colors.muted; ctx.font = "400 14px Arial, sans-serif";
+      let metaY = y + 30 + subjectLines * 24 + 26;
+      if (item.room) { ctx.fillText(`Xona: ${item.room}`, x + 12, metaY); metaY += 20; }
+      if (item.teacher) drawCanvasLines(ctx, item.teacher, x + 12, metaY, cellWidth - 24, 18, 2);
+    });
+  }
+  canvas.toBlob(blob => {
+    if (!blob) return toast("PNG tayyorlab bo'lmadi");
+    const link = document.createElement("a");
+    link.download = `haftalik-jadval-${new Date().toISOString().slice(0, 10)}.png`;
+    link.href = URL.createObjectURL(blob); link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }, "image/png");
+}
+$("#downloadSchedulePng").onclick = downloadSchedulePng;
 
 async function loadSchedule() {
   schedule = await api("/api/schedule");

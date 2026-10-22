@@ -622,7 +622,7 @@ async function loadPlatform() {
     const groups = await api("/api/platform/groups");
     $("#platformGroups").innerHTML = groups.length ? groups.map(g => `<div class="card" style="margin-bottom:10px">
       <div class="row" style="align-items:center"><div style="flex:1"><b>${esc(g.name)}</b><div class="muted">${esc(g.slug)} · faol kodlar: ${g.active_codes}</div></div>
-      <button class="primary sm" data-new-code="${g.id}">Sardor kodi yaratish</button></div>
+      <a class="sm" href="/g/${encodeURIComponent(g.slug)}" target="_blank" rel="noopener">Ochiq sahifa</a><button class="primary sm" data-new-code="${g.id}">Sardor kodi yaratish</button></div>
       <div id="codes-${g.id}" class="muted" style="margin-top:8px">Kodlar yuklanmoqda...</div>
     </div>`).join("") : '<div class="card muted">Hali guruhlar yo‘q.</div>';
     for (const g of groups) await loadGroupCodes(g.id);

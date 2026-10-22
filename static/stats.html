@@ -109,7 +109,8 @@ function render(data) {
   $('#summary').innerHTML = [
     ['Faol guruhlar', data.length], ['Talabalar', totals.students], ['Darslar', totals.lessons], ['Umumiy davomat', pct(rate)]
   ].map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${nf.format(value)}</strong></div>`).join('');
-  $('#updated').textContent = `Yangilandi: ${new Date().toLocaleString('uz-UZ')}`;
+  const isSingleGroup = new URLSearchParams(location.search).has('group');
+  $('#updated').textContent = `${isSingleGroup ? 'Guruh sahifasi' : 'Yangilandi'}: ${new Date().toLocaleString('uz-UZ')}`;
   $('#groups').innerHTML = data.length ? data.map(g => `<article class="group-card">
     <div class="group-head"><h2>${esc(g.name)}</h2><div class="group-actions"><button class="fullscreen-btn" type="button" data-fullscreen-group aria-label="${esc(g.name)} blokini to‘liq ekranga chiqarish" title="To‘liq ekran"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/></svg></button><div class="rate">${pct(g.attendance_rate)}<small>davomat</small></div></div></div>
     <div class="group-body"><div class="pie" style="${pieStyle(g)}" aria-label="${esc(g.name)} davomat diagrammasi"></div><div class="legend">
@@ -138,7 +139,13 @@ document.addEventListener('fullscreenchange', () => {
       : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/></svg>';
   });
 });
-fetch('/api/public/stats', { headers: {'Accept':'application/json'} }).then(r => { if (!r.ok) throw new Error('Statistika yuklanmadi'); return r.json(); }).then(render).catch(error => { $('#summary').innerHTML = ''; $('#groups').innerHTML = `<div class="error">${esc(error.message)}</div>`; $('#ranking').innerHTML = ''; });
+const groupSlug = new URLSearchParams(location.search).get('group');
+const statsUrl = groupSlug ? `/api/public/stats?slug=${encodeURIComponent(groupSlug)}` : '/api/public/stats';
+fetch(statsUrl, { headers: {'Accept':'application/json'} }).then(r => { if (!r.ok) throw new Error(r.status === 404 ? 'Guruh topilmadi' : 'Statistika yuklanmadi'); return r.json(); }).then(data => {
+  if (groupSlug && !data.length) throw new Error('Guruh topilmadi');
+  if (groupSlug && data[0]) document.title = `${data[0].name} — Davomat statistikasi`;
+  render(data);
+}).catch(error => { $('#summary').innerHTML = ''; $('#groups').innerHTML = `<div class="error">${esc(error.message)}</div>`; $('#ranking').innerHTML = ''; });
 </script>
 </body>
 </html>

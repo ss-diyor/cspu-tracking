@@ -8,7 +8,7 @@ import secrets
 import time as pytime
 import uuid
 from collections import defaultdict, deque
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from contextlib import asynccontextmanager
 from copy import copy
 from datetime import date, time, timedelta
@@ -592,8 +592,8 @@ async def copy_attendance(lesson_id: int, body: AttendanceCopyIn, request: Reque
 
 # ---------- Statistika ----------
 @app.get("/api/public/stats")
-async def public_stats():
-    """Barcha faol guruhlar bo'yicha faqat umumiy, shaxsiyatsiz statistika."""
+async def public_stats(slug: str | None = None):
+    """Faol guruhlar bo'yicha umumiy statistika; slug berilsa bitta guruhni qaytaradi."""
     rows = await app.state.pool.fetch(
         """WITH group_students AS (
                SELECT group_id, COUNT(*) AS students
@@ -615,7 +615,7 @@ async def public_stats():
                JOIN students s ON s.id=a.student_id AND s.active AND s.group_id=l.group_id
                GROUP BY l.group_id
            )
-           SELECT g.name,
+           SELECT g.name, g.slug,
                   COALESCE(gs.students, 0) AS students,
                   COALESCE(gl.lessons, 0) AS lessons,
                   COALESCE(ga.present, 0) AS present,
@@ -626,8 +626,9 @@ async def public_stats():
            LEFT JOIN group_students gs ON gs.group_id=g.id
            LEFT JOIN group_lessons gl ON gl.group_id=g.id
            LEFT JOIN group_attendance ga ON ga.group_id=g.id
-           WHERE g.active
-           ORDER BY g.name"""
+           WHERE g.active AND ($1::text IS NULL OR g.slug=$1)
+           ORDER BY g.name""",
+        slug,
     )
     result = []
     for row in rows:
@@ -1554,6 +1555,12 @@ async def admin_page():
 async def captain_page():
     return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html"))
 @app.get("/stats", include_in_schema=False)
-async def public_stats_page():
+async def stats_page():
     return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "stats.html"))
+
+@app.get("/g/{slug}", include_in_schema=False)
+async def group_public_page(slug: str):
+    """Guruh slugi orqali uning shaxsiyatsiz public statistika sahifasi."""
+    return RedirectResponse(url=f"/stats?group={quote(slug, safe='')}", status_code=307)
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

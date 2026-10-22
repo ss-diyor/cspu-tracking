@@ -8,6 +8,7 @@
     :root { --bg:#eef2f5; --surface:#fff; --ink:#14212b; --muted:#5d6b76; --line:#d5dde3; --accent:#0f6b8f; --present:#1f8a4c; --late:#1d6fa5; --excused:#b7791f; --unexcused:#c9342b; }
     @media (prefers-color-scheme:dark) { :root { --bg:#0f171d; --surface:#17222a; --ink:#e8eef2; --muted:#93a2ad; --line:#2a3943; --accent:#4cb4d8; } }
     * { box-sizing:border-box; }
+    @property --pie-reveal { syntax:"<angle>"; inherits:false; initial-value:0deg; }
     body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 Onest,Inter,system-ui,-apple-system,sans-serif; }
     main { width:min(1120px,100%); margin:0 auto; padding:28px 20px 48px; }
     header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:10px 0 28px; border-bottom:1px solid var(--line); }
@@ -24,13 +25,14 @@
     .section-head { display:flex; align-items:end; justify-content:space-between; gap:12px; margin:26px 0 12px; }
     .updated { font-size:.82rem; }
     .group-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
-    .group-card { padding:16px; }
+    .group-card { position:relative; padding:16px 16px 62px; }
     .group-head { display:flex; justify-content:space-between; gap:12px; align-items:start; }
     .group-actions { display:flex; align-items:start; gap:8px; }
-    .fullscreen-btn { width:36px; height:36px; display:grid; place-items:center; border:1px solid var(--line); border-radius:8px; padding:0; background:var(--surface); color:var(--muted); cursor:pointer; }
+    .fullscreen-btn { position:absolute; right:16px; bottom:16px; width:36px; height:36px; display:grid; place-items:center; border:1px solid var(--line); border-radius:8px; padding:0; background:var(--surface); color:var(--muted); cursor:pointer; z-index:2; }
     .fullscreen-btn svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
     .fullscreen-btn:hover { color:var(--ink); border-color:var(--accent); }
     .group-card:fullscreen { width:100vw; height:100vh; max-width:none; border:0; border-radius:0; padding:clamp(32px,5vw,88px); display:flex; flex-direction:column; justify-content:center; overflow:auto; }
+    .group-card:fullscreen .fullscreen-btn { right:clamp(24px,3vw,48px); bottom:clamp(24px,3vw,48px); }
     .group-card:fullscreen .group-head { width:min(1400px,100%); margin:0 auto; align-items:center; }
     .group-card:fullscreen .group-head h2 { font-size:clamp(2rem,4vw,4.5rem); letter-spacing:-.05em; }
     .group-card:fullscreen .group-body { grid-template-columns:minmax(260px,38%) 1fr; gap:clamp(36px,7vw,120px); max-width:1400px; width:100%; flex:1; margin:clamp(38px,7vh,100px) auto 0; align-items:center; }
@@ -46,7 +48,8 @@
     .rate { color:var(--accent); font-size:1.8rem; font-weight:700; line-height:1; white-space:nowrap; }
     .rate small { display:block; color:var(--muted); font-size:.7rem; font-weight:400; text-align:right; margin-top:4px; }
     .group-body { display:grid; grid-template-columns:118px 1fr; gap:16px; align-items:center; margin-top:18px; }
-    .pie { width:112px; height:112px; border-radius:50%; position:relative; background:conic-gradient(var(--present) 0deg 0deg, var(--late) 0deg 0deg, var(--excused) 0deg 0deg, var(--unexcused) 0deg 0deg, var(--line) 0deg 360deg); }
+    .pie { width:112px; height:112px; border-radius:50%; position:relative; background:conic-gradient(var(--present) 0deg 0deg, var(--late) 0deg 0deg, var(--excused) 0deg 0deg, var(--unexcused) 0deg 0deg, var(--line) 0deg 360deg); -webkit-mask:conic-gradient(#000 0deg var(--pie-reveal), transparent var(--pie-reveal) 360deg); mask:conic-gradient(#000 0deg var(--pie-reveal), transparent var(--pie-reveal) 360deg); animation:pie-fill 1.25s cubic-bezier(.22,.8,.25,1) 80ms both; will-change:--pie-reveal; }
+    @keyframes pie-fill { from { --pie-reveal:0deg; } to { --pie-reveal:360deg; } }
     .pie::after { content:""; position:absolute; inset:25px; border-radius:50%; background:var(--surface); }
     .legend { display:grid; gap:5px; font-size:.85rem; }
     .legend-row { display:flex; justify-content:space-between; gap:12px; color:var(--muted); }

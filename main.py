@@ -811,13 +811,15 @@ def note_text(entries: list) -> str:
     return "; ".join(f"{d:%d.%m} {', '.join(ns)}" for d, ns in sorted(by_day.items()))
 
 
-def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict, notes: list | None = None):
+def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict,
+              notes: list | None = None, group_name: str = "XTA-26/5"):
     """Bitta haftalik varaqni to'ldiradi.
     lesson_ids: {(sana, juftlik): dars_id}, att: {(dars_id, talaba_id): status}
     notes: [(talaba_id, sana, izoh)] — "Sababli" izohlari; None bo'lsa (starosta emas) chiqarilmaydi"""
     days = [monday + timedelta(days=i) for i in range(5)]
     friday = days[-1]
     ws.title = f"{monday:%d.%m}-{friday:%d.%m}"
+    ws["A1"] = f"DAVOMAT - {group_name}"
     ws["A2"] = (f"Hafta:  {monday:%d} . {monday:%m} . {monday:%Y}  dan  "
                 f"{friday:%d} . {friday:%m} . {friday:%Y}  gacha")
     for i, d in enumerate(days):
@@ -874,11 +876,12 @@ def fill_week(ws, monday: date, students: list, lesson_ids: dict, att: dict, not
     ws.print_area = f"A1:X{legend}"
 
 
-def add_summary(wb, rows: list, month: str, notes: list | None = None):
+def add_summary(wb, rows: list, month: str, notes: list | None = None,
+                group_name: str = "XTA-26/5"):
     ws = wb.create_sheet("Oy jami")
     head_fill = PatternFill("solid", fgColor="E7E6E6")
     box = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-    ws["A1"] = f"OY JAMI — {month}"
+    ws["A1"] = f"OY JAMI — {group_name} — {month}"
     ws["A1"].font = Font(name="Arial", size=14, bold=True)
     ws.merge_cells("A1:I1" if notes is not None else "A1:H1")
     ws["A1"].alignment = Alignment(horizontal="center")
@@ -920,24 +923,27 @@ def add_summary(wb, rows: list, month: str, notes: list | None = None):
     ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
 
 
-def build_month_workbook(students, mondays, lesson_ids, att, stats_rows, month, notes=None):
+def build_month_workbook(students, mondays, lesson_ids, att, stats_rows, month,
+                         notes=None, group_name: str = "XTA-26/5"):
     wb = load_workbook(TEMPLATE)
     base = wb.active
     if mondays:
         sheets = [base] + [wb.copy_worksheet(base) for _ in mondays[1:]]
         for ws, mon in zip(sheets, mondays):
-            fill_week(ws, mon, students, lesson_ids, att, notes)
+            fill_week(ws, mon, students, lesson_ids, att, notes, group_name)
     else:
         wb.remove(base)
     start, end = month_range(month)
     add_summary(wb, stats_rows, month,
-                None if notes is None else [e for e in notes if start <= e[1] < end])
+                None if notes is None else [e for e in notes if start <= e[1] < end],
+                group_name)
     return wb
 
 
-def build_week_workbook(students, monday, lesson_ids, att, notes=None):
+def build_week_workbook(students, monday, lesson_ids, att, notes=None,
+                        group_name: str = "XTA-26/5"):
     wb = load_workbook(TEMPLATE)
-    fill_week(wb.active, monday, students, lesson_ids, att, notes)
+    fill_week(wb.active, monday, students, lesson_ids, att, notes, group_name)
     return wb
 
 
@@ -987,10 +993,21 @@ def xlsx_response(wb, filename: str):
     )
 
 
+async def current_group(group_id: int):
+    row = await app.state.pool.fetchrow("SELECT name, slug FROM groups WHERE id=$1 AND active", group_id)
+    return dict(row) if row else {"name": "XTA-26/5", "slug": "xta-26-5"}
+
+
+def export_filename(group_slug: str, suffix: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", group_slug).strip("-_") or "guruh"
+    return f"davomat-{slug}-{suffix}.xlsx"
+
+
 @app.get("/api/export", dependencies=[Depends(admin)])
 async def export_month(month: str, request: Request):
     """Oylik hisobot: har hafta uchun alohida varaq (shablon ko'rinishida) + 'Oy jami'."""
     start, end = month_range(month)
+    group = await current_group(gid(request))
     days = await app.state.pool.fetch(
         "SELECT DISTINCT lesson_date FROM lessons WHERE lesson_date >= $1 AND lesson_date < $2 AND group_id=$3",
         start, end, gid(request),
@@ -1006,19 +1023,21 @@ async def export_month(month: str, request: Request):
     until = max(end, mondays[-1] + timedelta(days=7)) if mondays else end
     notes = await load_notes(first, until, gid(request))
     wb = build_month_workbook(
-        await active_students(gid(request)), mondays, lesson_ids, att, await month_stats(month, gid(request)), month, notes
+        await active_students(gid(request)), mondays, lesson_ids, att,
+        await month_stats(month, gid(request)), month, notes, group["name"]
     )
-    return xlsx_response(wb, f"davomat-{month}.xlsx")
+    return xlsx_response(wb, export_filename(group["slug"], month))
 
 
 @app.get("/api/export/week", dependencies=[Depends(admin)])
 async def export_week(day: date, request: Request):
     """Haftalik hisobot: berilgan sana qaysi haftaga tushsa, o'sha haftaning varag'i."""
+    group = await current_group(gid(request))
     monday = day - timedelta(days=day.weekday())
     lesson_ids, att = await load_span(monday, monday + timedelta(days=7), gid(request))
     notes = await load_notes(monday, monday + timedelta(days=7), gid(request))
-    wb = build_week_workbook(await active_students(gid(request)), monday, lesson_ids, att, notes)
-    return xlsx_response(wb, f"davomat-{monday:%Y-%m-%d}.xlsx")
+    wb = build_week_workbook(await active_students(gid(request)), monday, lesson_ids, att, notes, group["name"])
+    return xlsx_response(wb, export_filename(group["slug"], f"hafta-{monday:%Y-%m-%d}"))
 
 
 # ---------- Talaba profili (shaxsiy kod bilan) ----------

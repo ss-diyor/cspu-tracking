@@ -444,6 +444,17 @@ async def remove_student(student_id: int, request: Request):
 # ---------- Darslar ----------
 @app.get("/api/lessons")
 async def list_lessons(lesson_date: date, request: Request):
+    # Davomatda qo'lda dars qo'shish formasi olib tashlanganligi uchun,
+    # haftalik jadvaldagi shu kun darslarini birinchi ochishda avtomatik yaratamiz.
+    weekday = lesson_date.weekday() + 1
+    await app.state.pool.execute(
+        """INSERT INTO lessons (lesson_date, pair_no, subject, group_id)
+           SELECT $1, s.pair_no, s.subject, s.group_id
+           FROM schedule s
+           WHERE s.weekday=$2 AND s.group_id=$3
+           ON CONFLICT (group_id, lesson_date, pair_no) DO NOTHING""",
+        lesson_date, weekday, gid(request),
+    )
     rows = await app.state.pool.fetch(
         "SELECT id, lesson_date, pair_no, subject FROM lessons "
         "WHERE lesson_date = $1 AND group_id=$2 ORDER BY pair_no",

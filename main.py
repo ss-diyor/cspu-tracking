@@ -595,19 +595,38 @@ async def copy_attendance(lesson_id: int, body: AttendanceCopyIn, request: Reque
 async def public_stats():
     """Barcha faol guruhlar bo'yicha faqat umumiy, shaxsiyatsiz statistika."""
     rows = await app.state.pool.fetch(
-        """SELECT g.name,
-                  COUNT(DISTINCT s.id) FILTER (WHERE s.active) AS students,
-                  COUNT(DISTINCT l.id) AS lessons,
-                  COUNT(a.id) FILTER (WHERE a.status='present') AS present,
-                  COUNT(a.id) FILTER (WHERE a.status='late') AS late,
-                  COUNT(a.id) FILTER (WHERE a.status='excused') AS excused,
-                  COUNT(a.id) FILTER (WHERE a.status='unexcused') AS unexcused
+        """WITH group_students AS (
+               SELECT group_id, COUNT(*) AS students
+               FROM students
+               WHERE active
+               GROUP BY group_id
+           ), group_lessons AS (
+               SELECT group_id, COUNT(*) AS lessons
+               FROM lessons
+               GROUP BY group_id
+           ), group_attendance AS (
+               SELECT l.group_id,
+                      COUNT(*) FILTER (WHERE a.status='present') AS present,
+                      COUNT(*) FILTER (WHERE a.status='late') AS late,
+                      COUNT(*) FILTER (WHERE a.status='excused') AS excused,
+                      COUNT(*) FILTER (WHERE a.status='unexcused') AS unexcused
+               FROM attendance a
+               JOIN lessons l ON l.id=a.lesson_id
+               JOIN students s ON s.id=a.student_id AND s.active AND s.group_id=l.group_id
+               GROUP BY l.group_id
+           )
+           SELECT g.name,
+                  COALESCE(gs.students, 0) AS students,
+                  COALESCE(gl.lessons, 0) AS lessons,
+                  COALESCE(ga.present, 0) AS present,
+                  COALESCE(ga.late, 0) AS late,
+                  COALESCE(ga.excused, 0) AS excused,
+                  COALESCE(ga.unexcused, 0) AS unexcused
            FROM groups g
-           LEFT JOIN students s ON s.group_id=g.id AND s.active
-           LEFT JOIN lessons l ON l.group_id=g.id
-           LEFT JOIN attendance a ON a.lesson_id=l.id AND a.student_id=s.id
+           LEFT JOIN group_students gs ON gs.group_id=g.id
+           LEFT JOIN group_lessons gl ON gl.group_id=g.id
+           LEFT JOIN group_attendance ga ON ga.group_id=g.id
            WHERE g.active
-           GROUP BY g.id, g.name
            ORDER BY g.name"""
     )
     result = []

@@ -146,6 +146,15 @@
   .schedule-slot .pair { color: var(--muted); font-size: .85rem; }
   .schedule-slot .subject { font-weight: 500; word-break: break-word; }
   .schedule-slot .meta { color: var(--muted); font-size: .8rem; }
+  .quick-schedule { overflow-x: auto; margin-top: 10px; }
+  .quick-grid { display: grid; grid-template-columns: 78px repeat(7, minmax(108px, 1fr)); min-width: 835px; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+  .quick-grid > div, .quick-grid > button { min-height: 58px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .quick-head, .quick-pair { padding: 8px 6px; background: var(--bg); color: var(--muted); font-size: .8rem; font-weight: 500; }
+  .quick-head { text-align: center; }
+  .quick-cell { width: 100%; height: 100%; padding: 6px; border: 0 !important; border-radius: 0; background: var(--surface); text-align: left; font-size: .8rem; }
+  .quick-cell:hover, .quick-cell:focus-visible { background: var(--bg); }
+  .quick-cell.filled { color: var(--ink); font-weight: 500; }
+  .quick-cell.empty { color: var(--muted); }
   .student-history { margin-top: 12px; }
   #studentHistory { min-height: 170px; }
   #studentHistory svg { display: block; width: 100%; height: auto; }
@@ -155,6 +164,8 @@
     #tabs button { min-width: 72px; font-size: .72rem; padding: 8px 5px; }
     .schedule-grid { grid-template-columns: 1fr; }
     .today-item .room { display: none; }
+    #tab-att #saveAtt { position: sticky; bottom: 70px; z-index: 10; box-shadow: 0 0 0 4px var(--surface), 0 3px 12px rgba(0,0,0,.14); }
+    #tab-att .att-filters { position: sticky; top: 0; z-index: 5; padding: 8px 0; background: var(--surface); }
   }
   .chart-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .chart-head #chartMode { flex: 1; margin-bottom: 0 !important; }
@@ -240,15 +251,6 @@
     <div class="card hidden" id="attCard">
       <div class="muted" id="attTitle"></div>
       <button class="sm primary admin-only hidden" id="markAllPresent" style="width:100%;margin:8px 0">Barchasini Bor deb belgilash</button>
-      <div class="copy-box admin-only hidden" id="copyAttendanceBox">
-        <div class="muted">Shu davomat holatini boshqa juftliklarga qo‘llash</div>
-        <select id="attendanceCopyTargets" multiple size="3" aria-label="Davomatni qo‘llash juftliklari" style="margin-top:8px"></select>
-        <div class="row" style="margin:8px 0 0">
-          <button class="sm" id="copyNextAttendance">Keyingi juftliklarni tanlash</button>
-          <button class="sm primary" id="copySelectedAttendance">Tanlanganlarga qo‘llash</button>
-        </div>
-        <div class="muted" style="margin-top:4px">Aniq juftliklarni tanlash uchun ro‘yxatda Ctrl/Cmd tugmasidan foydalaning.</div>
-      </div>
       <div class="att-filters" id="attFilters">
         <input id="attStudentSearch" type="search" placeholder="Talabani qidirish..." aria-label="Talabani qidirish">
         <div class="att-filter-buttons" id="attFilterButtons">
@@ -262,6 +264,15 @@
       </div>
       <div id="attList"></div>
       <button class="primary admin-only hidden" id="saveAtt" style="width:100%;margin-top:10px">Davomatni saqlash</button>
+      <div class="copy-box admin-only hidden" id="copyAttendanceBox">
+        <div class="muted">Shu davomat holatini boshqa juftliklarga qo‘llash</div>
+        <select id="attendanceCopyTargets" multiple size="3" aria-label="Davomatni qo‘llash juftliklari" style="margin-top:8px"></select>
+        <div class="row" style="margin:8px 0 0">
+          <button class="sm" id="copyNextAttendance">Keyingi juftliklarni tanlash</button>
+          <button class="sm primary" id="copySelectedAttendance">Tanlanganlarga qo‘llash</button>
+        </div>
+        <div class="muted" style="margin-top:4px">Aniq juftliklarni tanlash uchun ro‘yxatda Ctrl/Cmd tugmasidan foydalaning.</div>
+      </div>
       <div class="row admin-only hidden" style="margin:8px 0 0">
         <button id="editLesson">Fanni o'zgartirish</button>
         <button id="delLesson">Darsni o'chirish</button>
@@ -340,7 +351,7 @@
         <select id="sDay">
           <option value="1">Dushanba</option><option value="2">Seshanba</option>
           <option value="3">Chorshanba</option><option value="4">Payshanba</option>
-          <option value="5">Juma</option><option value="6">Shanba</option>
+          <option value="5">Juma</option><option value="6">Shanba</option><option value="7">Yakshanba</option>
         </select>
         <select id="sPair">
           <option value="1">1-juftlik</option><option value="2">2-juftlik</option>
@@ -361,6 +372,11 @@
         <button class="primary" id="sSave">Qo'shish</button>
         <button id="sCancel" class="hidden">Bekor qilish</button>
       </div>
+    </div>
+    <div class="card admin-only hidden" id="schQuickCard">
+      <div style="font-weight:500">Haftalik jadvalni tezkor kiritish</div>
+      <div class="muted">Bo‘sh katakni bosing, dars ma’lumotlarini kiriting va saqlang.</div>
+      <div class="quick-schedule"><div id="schQuickGrid"></div></div>
     </div>
     <div id="schToday"></div>
     <div id="schWeek"></div>
@@ -1127,7 +1143,22 @@ function renderSchedule() {
     return `<div class="card schedule-day${n === todayNo ? " today" : ""}"><h2>${DAYS[n]}${n === todayNo ? " — bugun" : ""}</h2>${slots}</div>`;
   };
   $("#schToday").innerHTML = "";
+  renderQuickSchedule();
   $("#schWeek").innerHTML = `<div class="schedule-grid">${[1, 2, 3, 4, 5, 6, 7].map(dayCard).join("")}</div>`;
+}
+
+function renderQuickSchedule() {
+  const header = `<div class="quick-head">Juftlik</div>${[1, 2, 3, 4, 5, 6, 7].map(d => `<div class="quick-head">${DAYS[d]}</div>`).join("")}`;
+  const cells = [1, 2, 3, 4, 5].map(pair => {
+    const row = [1, 2, 3, 4, 5, 6, 7].map(day => {
+      const lesson = schedule.find(l => l.weekday === day && l.pair_no === pair);
+      return `<button type="button" class="quick-cell ${lesson ? "filled" : "empty"}" data-quick-day="${day}" data-quick-pair="${pair}">
+        ${lesson ? `${esc(lesson.subject)}${lesson.room ? `<div class="muted">${esc(lesson.room)}</div>` : ""}` : "+ Dars"}
+      </button>`;
+    }).join("");
+    return `<div class="quick-pair">${pair}-juftlik</div>${row}`;
+  }).join("");
+  $("#schQuickGrid").innerHTML = `<div class="quick-grid">${header}${cells}</div>`;
 }
 
 async function loadSchedule() {
@@ -1135,6 +1166,26 @@ async function loadSchedule() {
   scheduleLoaded = true;
   renderSchedule();
 }
+
+$("#schQuickGrid").onclick = e => {
+  const cell = e.target.closest("[data-quick-day]"); if (!cell) return;
+  const day = +cell.dataset.quickDay, pair = +cell.dataset.quickPair;
+  const lesson = schedule.find(l => l.weekday === day && l.pair_no === pair);
+  if (lesson) {
+    editId = lesson.id;
+    $("#sDay").value = lesson.weekday; $("#sPair").value = lesson.pair_no;
+    $("#sStart").value = lesson.start_time || ""; $("#sEnd").value = lesson.end_time || "";
+    $("#sSubject").value = lesson.subject; $("#sRoom").value = lesson.room || ""; $("#sTeacher").value = lesson.teacher || "";
+    $("#sSave").textContent = "O'zgarishlarni saqlash";
+    $("#schFormTitle").textContent = "Darsni tahrirlash";
+    $("#sCancel").classList.remove("hidden");
+  } else {
+    resetSchForm();
+    $("#sDay").value = day; $("#sPair").value = pair;
+  }
+  $("#schForm").scrollIntoView({ behavior: "smooth", block: "start" });
+  setTimeout(() => $("#sSubject").focus(), 250);
+};
 
 function resetSchForm() {
   editId = null;
